@@ -4,155 +4,166 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Robematcher</title>
-  <meta name="description" content="Din digitala garderob – outfits som matchar färg, stil och väder." />
-  <meta name="theme-color" content="#f6f2ec" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#16130f" media="(prefers-color-scheme: dark)" />
+  <meta name="description" content="Din garderob, fotograferad. Outfits efter färg, stil och vädret där du är." />
+  <meta name="theme-color" content="#f3f0ea" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#121110" media="(prefers-color-scheme: dark)" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Hanken+Grotesk:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header class="topbar">
-    <h1 class="brand">Robe<span>matcher</span></h1>
-    <nav class="tabs" role="tablist">
-      <button role="tab" data-view="today" aria-selected="true"><span aria-hidden="true">✨</span> Outfits</button>
-      <button role="tab" data-view="wardrobe"><span aria-hidden="true">🧺</span> Garderob</button>
-      <button role="tab" data-view="favorites"><span aria-hidden="true">♥</span> Sparade</button>
-      <button role="tab" data-view="colors"><span aria-hidden="true">🎨</span> Färglära</button>
+  <header class="masthead">
+    <span class="wordmark">Robematcher</span>
+    <nav class="nav" aria-label="Huvudmeny">
+      <button data-view="today" aria-current="page">Idag</button>
+      <button data-view="wardrobe">Garderob</button>
+      <button data-view="saved">Sparat</button>
+      <button data-view="color">Färg</button>
     </nav>
   </header>
 
   <main>
-    <!-- OUTFITS -->
+    <!-- IDAG -->
     <section id="view-today" class="view active">
-      <div class="weather card" id="weather"></div>
+      <section class="forecast" id="forecast" aria-live="polite"></section>
 
-      <div class="controls">
-        <div class="chip-row" id="style-chips" aria-label="Stil"></div>
-        <button class="btn primary" id="generate">Skapa outfits</button>
+      <div class="tabs" id="style-tabs" role="tablist" aria-label="Stil"></div>
+
+      <div class="looks-head" id="looks-head" hidden>
+        <span class="eyebrow" id="looks-count"></span>
+        <button class="textbtn" id="shuffle">Blanda om</button>
       </div>
-      <p class="hint" id="lock-hint" hidden>Tryck på ett plagg för att låsa det – nästa omgång byggs kring det.</p>
-      <div id="outfits" class="outfit-grid"></div>
+      <div id="looks" class="looks"></div>
+      <p class="footnote" id="lock-hint" hidden>Tryck på ett plagg för att behålla det i nästa omgång.</p>
     </section>
 
     <!-- GARDEROB -->
     <section id="view-wardrobe" class="view">
-      <div class="section-head">
-        <h2>Min garderob <small id="wardrobe-count"></small></h2>
-        <button class="btn primary" id="add-item">+ Lägg till plagg</button>
+      <div class="page-head">
+        <h1>Garderob</h1>
+        <span class="eyebrow" id="wardrobe-count"></span>
       </div>
-      <div class="chip-row" id="category-chips"></div>
-      <div id="wardrobe-grid" class="item-grid"></div>
-      <div class="data-actions">
-        <button class="btn ghost" id="load-demo">Ladda exempelgarderob</button>
-        <button class="btn ghost" id="export">Exportera backup</button>
-        <label class="btn ghost">Importera backup<input type="file" id="import" accept="application/json" hidden /></label>
+      <div class="tabs" id="category-tabs" role="tablist" aria-label="Kategori"></div>
+      <div id="wardrobe-grid" class="wardrobe"></div>
+      <div class="wardrobe-tools">
+        <button class="textbtn" id="load-demo">Ladda exempelgarderob</button>
+        <button class="textbtn" id="export">Exportera backup</button>
+        <label class="textbtn">Importera backup<input type="file" id="import" accept="application/json" hidden /></label>
+      </div>
+      <div class="add-bar">
+        <button class="btn" id="add-camera">Fota plagg</button>
+        <button class="btn quiet" id="add-library">Välj bilder</button>
       </div>
     </section>
 
-    <!-- SPARADE -->
-    <section id="view-favorites" class="view">
-      <h2>Sparade outfits</h2>
-      <div id="favorites" class="outfit-grid"></div>
+    <!-- SPARAT -->
+    <section id="view-saved" class="view">
+      <div class="page-head"><h1>Sparat</h1></div>
+      <div id="saved" class="looks grid"></div>
     </section>
 
-    <!-- FÄRGLÄRA -->
-    <section id="view-colors" class="view">
-      <h2>Färglära för garderoben</h2>
-      <div class="color-lab card">
-        <div class="wheel" aria-hidden="true"></div>
-        <div>
-          <label class="field">Välj en färg
-            <input type="color" id="lab-color" value="#1f2a44" />
-          </label>
-          <p id="lab-name" class="lab-name"></p>
-          <div id="lab-suggest" class="swatch-row"></div>
-          <h3>Passar i din garderob</h3>
-          <div id="lab-matches" class="mini-items"></div>
-        </div>
+    <!-- FÄRG -->
+    <section id="view-color" class="view">
+      <div class="page-head"><h1>Färg</h1></div>
+      <div class="color-lab">
+        <label class="color-pick">
+          <input type="color" id="lab-color" value="#1f2a44" />
+          <span id="lab-name"></span>
+        </label>
+        <p class="lab-kind" id="lab-kind"></p>
+        <h2 class="eyebrow">Passar till</h2>
+        <div id="lab-suggest" class="lab-swatches"></div>
+        <h2 class="eyebrow">Ur din garderob</h2>
+        <div id="lab-matches" class="lab-items"></div>
       </div>
-      <div class="rules">
-        <article class="card"><h3>60 – 30 – 10</h3><p>Låt en färg ta ca 60 % (oftast neutral bas), en andra 30 % och en accent 10 %. Då ser outfiten genomtänkt ut i stället för rörig.</p></article>
-        <article class="card"><h3>Neutraler är grunden</h3><p>Svart, vitt, grått, marinblått, beige, kamel, oliv och denim fungerar med nästan allt. Bygg basen av dem och lägg till en eller två kulörer.</p></article>
-        <article class="card"><h3>Ton-i-ton</h3><p>Samma färg i olika ljushet (t.ex. ljusblå skjorta + marinblå kavaj) ser dyrt och sofistikerat ut. Variera material och ljushet.</p></article>
-        <article class="card"><h3>Analoga färger</h3><p>Grannar på färghjulet – rost, senap och tegel, eller salvia och petrol – ger mjuka, harmoniska outfits.</p></article>
-        <article class="card"><h3>Komplementfärger</h3><p>Motsatser på färghjulet (blått + orange, grönt + rosa) ger energi. Dämpa den ena, t.ex. marinblått + rost i stället för koboltblått + orange.</p></article>
-        <article class="card"><h3>Ett mönster i taget</h3><p>Låt ett tydligt mönster vara stjärnan och plocka upp en av dess färger i ett annat plagg. Diskreta mönster går att kombinera.</p></article>
-        <article class="card"><h3>Kontrast & ljushet</h3><p>Ljus överdel mot mörk underdel (eller tvärtom) ger tydlig silhuett. Nästan-samma-färg som inte är exakt lika ser lätt ut som en miss.</p></article>
-        <article class="card"><h3>Matcha läder</h3><p>Skärp och skor i samma färg är en klassisk detalj – brunt med brunt, svart med svart.</p></article>
-      </div>
+
+      <ol class="rules">
+        <li><h3>60 / 30 / 10</h3><p>En färg tar det mesta av ytan, oftast en neutral. En andra färg tar ungefär en tredjedel och en accent resten. Då ser outfiten genomtänkt ut.</p></li>
+        <li><h3>Neutraler bär</h3><p>Svart, vitt, grått, marinblått, beige, kamel, oliv och denim fungerar med nästan allt. Bygg basen av dem.</p></li>
+        <li><h3>Ton i ton</h3><p>Samma kulör i olika ljushet, till exempel ljusblå skjorta under marinblå kavaj. Variera material och nyans.</p></li>
+        <li><h3>Grannar på färghjulet</h3><p>Rost, senap och tegel. Salvia och petrol. Analoga färger ger mjuka, harmoniska helheter.</p></li>
+        <li><h3>Motsatser, dämpade</h3><p>Komplementfärger ger energi. Marinblått och rost fungerar bättre än koboltblått och orange.</p></li>
+        <li><h3>Ett mönster åt gången</h3><p>Låt mönstret vara huvudsaken och plocka upp en av dess färger i ett annat plagg.</p></li>
+        <li><h3>Kontrast</h3><p>Ljust mot mörkt ger en tydlig silhuett. Två nästan lika nyanser ser lätt ut som en miss.</p></li>
+        <li><h3>Läder mot läder</h3><p>Skärp och skor i samma färg. Brunt med brunt, svart med svart.</p></li>
+      </ol>
     </section>
   </main>
 
-  <!-- PLAGG-EDITOR -->
-  <dialog id="item-dialog">
-    <form method="dialog" id="item-form">
-      <header class="dialog-head">
-        <h2 id="item-dialog-title">Nytt plagg</h2>
-        <button type="button" class="icon-btn" data-close aria-label="Stäng">✕</button>
-      </header>
+  <input type="file" id="cam-input" accept="image/*" capture="environment" hidden />
+  <input type="file" id="lib-input" accept="image/*" multiple hidden />
 
-      <div class="photo-drop">
-        <img id="photo-preview" alt="" hidden />
-        <div id="photo-placeholder">📷<br />Ta foto eller välj bild<br /><small>Färgerna läses av automatiskt</small></div>
-        <input type="file" id="photo-input" accept="image/*" capture="environment" />
-      </div>
-      <div id="extracted" class="swatch-row" hidden></div>
-      <p class="hint" id="extracted-hint" hidden>Tryck på en färg för huvudfärg, långtryck/högerklick för andrafärg.</p>
-
-      <div class="grid2">
-        <label class="field">Kategori
-          <select name="category" id="f-category"></select>
-        </label>
-        <label class="field">Typ
-          <select name="subtype" id="f-subtype"></select>
-        </label>
+  <!-- PLAGG -->
+  <dialog id="sheet" class="sheet">
+    <form id="item-form" method="dialog">
+      <div class="sheet-head">
+        <span class="eyebrow" id="sheet-title">Nytt plagg</span>
+        <button type="button" class="textbtn" data-close>Stäng</button>
       </div>
 
-      <div class="grid2">
-        <label class="field">Huvudfärg
-          <span class="color-field"><input type="color" name="color" id="f-color" value="#1f2a44" /><span id="f-color-name"></span></span>
-        </label>
-        <label class="field">Andrafärg <small>(valfri)</small>
-          <span class="color-field"><input type="color" name="color2" id="f-color2" value="#ffffff" />
-            <label class="inline"><input type="checkbox" id="f-has-color2" /> använd</label></span>
-        </label>
+      <figure class="stage" id="stage">
+        <img id="ph" alt="" hidden />
+        <div class="stage-empty" id="stage-empty">
+          <p>Lägg plagget plant på en jämn yta, eller häng det mot en vägg, och fota rakt framifrån.</p>
+          <div class="row">
+            <button type="button" class="btn" data-pick="cam">Ta foto</button>
+            <button type="button" class="btn quiet" data-pick="lib">Välj bild</button>
+          </div>
+        </div>
+        <span class="stage-status" id="stage-status" hidden>Frilägger…</span>
+      </figure>
+      <div class="stage-tools" id="stage-tools" hidden>
+        <label class="switch"><input type="checkbox" id="f-cutout" checked /> <span>Frilägg</span></label>
+        <button type="button" class="textbtn" data-pick="cam">Fota om</button>
       </div>
 
-      <label class="field">Namn
-        <input type="text" name="name" id="f-name" placeholder="t.ex. Marinblå stickad tröja" />
-      </label>
-
-      <label class="field">Mönster
-        <select name="pattern" id="f-pattern"></select>
-      </label>
-
-      <fieldset class="field">
-        <legend>Stilar</legend>
-        <div class="chip-row" id="f-styles"></div>
+      <fieldset class="block">
+        <legend class="eyebrow">Huvudfärg</legend>
+        <div class="swatches" id="sw-main"></div>
+      </fieldset>
+      <fieldset class="block">
+        <legend class="eyebrow">Detaljfärg</legend>
+        <div class="swatches" id="sw-second"></div>
       </fieldset>
 
-      <div class="grid2">
-        <label class="field">Värme <output id="o-warmth"></output>
-          <input type="range" min="0" max="5" step="1" name="warmth" id="f-warmth" />
-        </label>
-        <label class="field">Formalitet <output id="o-formality"></output>
-          <input type="range" min="1" max="5" step="1" name="formality" id="f-formality" />
-        </label>
+      <fieldset class="block">
+        <legend class="eyebrow">Vad är det?</legend>
+        <div class="cats" id="f-category"></div>
+      </fieldset>
+
+      <div class="fields">
+        <label>Typ<select id="f-subtype"></select></label>
+        <label>Namn<input type="text" id="f-name" autocomplete="off" /></label>
       </div>
 
-      <label class="inline check"><input type="checkbox" name="waterproof" id="f-waterproof" /> Tål regn / vattentät</label>
+      <details class="more">
+        <summary>Fler detaljer</summary>
+        <div class="more-body">
+          <fieldset class="block">
+            <legend class="eyebrow">Mönster</legend>
+            <div class="seg" id="f-pattern"></div>
+          </fieldset>
+          <fieldset class="block">
+            <legend class="eyebrow">Stilar</legend>
+            <div class="checks" id="f-styles"></div>
+          </fieldset>
+          <label class="range">Värme <output id="o-warmth"></output><input type="range" min="0" max="5" id="f-warmth" /></label>
+          <label class="range">Formalitet <output id="o-formality"></output><input type="range" min="1" max="5" id="f-formality" /></label>
+          <label class="switch"><input type="checkbox" id="f-waterproof" /> <span>Tål regn</span></label>
+        </div>
+      </details>
 
-      <footer class="dialog-foot">
-        <button type="button" class="btn danger" id="delete-item" hidden>Ta bort</button>
+      <div class="sheet-foot">
+        <button type="button" class="textbtn danger" id="delete-item" hidden>Ta bort</button>
         <span class="spacer"></span>
-        <button type="button" class="btn ghost" data-close>Avbryt</button>
-        <button type="submit" class="btn primary">Spara</button>
-      </footer>
+        <button type="submit" class="btn" id="save-item">Spara</button>
+      </div>
     </form>
   </dialog>
 

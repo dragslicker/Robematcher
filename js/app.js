@@ -1,22 +1,23 @@
-import { CATEGORIES, SUBTYPES, STYLES, PATTERNS } from './catalog.js';
+import { CATEGORIES, SUBTYPES, STYLES, PATTERNS, defaultStyles } from './catalog.js';
 import { colorName, textColorFor, suggestMatches, paletteHarmony, colorFamily } from './color.js';
 import { generateOutfits, scoreOutfit } from './outfits.js';
-import { fetchWeather, geocode, describeCode, conditionsFrom, LEVEL_LABELS } from './weather.js';
-import { load, save, uid, exportJson, importJson } from './storage.js';
-import { loadImage, resizeToDataUrl, extractColors } from './image.js';
+import {
+  fetchWeather, geocode, describeCode, conditionsFrom, LEVEL_LABELS, getPosition, reverseGeocode,
+} from './weather.js';
+import { init, save, uid, exportJson, importJson, photoUrl, putPhoto, deletePhoto } from './storage.js';
+import { processPhoto } from './image.js';
 import { demoWardrobe } from './demo.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
-let state = load();
-let conditions = null;
-let weatherStatus = 'idle'; // idle | loading | ok | error | manual
-let weatherError = '';
+let state;
 let outfits = [];
 const locked = new Set();
 let categoryFilter = '';
+const wx = { status: 'idle', error: '', note: '', cond: null, panel: false, lastFetch: 0 };
 
 const persist = () => save(state);
 
@@ -25,19 +26,31 @@ function toast(msg) {
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => t.classList.remove('show'), 2400);
+  toast.timer = setTimeout(() => t.classList.remove('show'), 2600);
 }
 
-// ---------- Ikoner ----------
+// ---------- Grafik ----------
+const ICONS = {
+  sun: '<circle cx="24" cy="24" r="8"/><path d="M24 6v5M24 37v5M6 24h5M37 24h5M11.3 11.3l3.5 3.5M33.2 33.2l3.5 3.5M11.3 36.7l3.5-3.5M33.2 14.8l3.5-3.5"/>',
+  partly: '<circle cx="18" cy="17" r="6"/><path d="M18 5v3M6 17h3M9.5 8.5l2 2M26.5 8.5l-2 2"/><path d="M16 38h20a7 7 0 0 0 0-14 10 10 0 0 0-19 3 5.5 5.5 0 0 0-1 11z"/>',
+  cloud: '<path d="M13 36h23a8 8 0 0 0 0-16 11 11 0 0 0-21 3 6.5 6.5 0 0 0-2 13z"/>',
+  rain: '<path d="M13 30h23a8 8 0 0 0 0-16 11 11 0 0 0-21 3 6.5 6.5 0 0 0-2 13z"/><path d="M17 35l-2 5M25 35l-2 5M33 35l-2 5"/>',
+  snow: '<path d="M13 30h23a8 8 0 0 0 0-16 11 11 0 0 0-21 3 6.5 6.5 0 0 0-2 13z"/><path d="M17 36v4M15 38h4M25 36v4M23 38h4M33 36v4M31 38h4"/>',
+  fog: '<path d="M8 18h32M12 24h28M8 30h28M14 36h22"/>',
+  storm: '<path d="M13 30h23a8 8 0 0 0 0-16 11 11 0 0 0-21 3 6.5 6.5 0 0 0-2 13z"/><path d="M25 32l-4 6h6l-4 6"/>',
+};
+const weatherIcon = (kind) => `<svg class="fc-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[kind] ?? ICONS.cloud}</svg>`;
+const PIN = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><path d="M6 11s4-3.6 4-6.5a4 4 0 0 0-8 0C2 7.4 6 11 6 11z"/><circle cx="6" cy="4.6" r="1.3"/></svg>';
+
+// Silhuetter för plagg utan foto (t.ex. exempelgarderoben).
 const SHAPES = {
   top: 'M22 10l-12 6 4 11 6-2v29h24V25l6 2 4-11-12-6c-1 4-5 6-10 6s-9-2-10-6z',
-  bottom: 'M18 8h28l3 48h-11l-6-32-6 32H15z',
-  dress: 'M25 6h14l-2 10 9 40H18l9-40z',
-  outerwear: 'M22 8l-12 6 3 38h11V24l8 10 8-10v28h11l3-38-12-6-10 14z',
-  shoes: 'M8 34c0-6 4-10 8-10 3 0 5 3 9 5 6 3 14 4 22 5 6 1 9 4 9 8v4H8z',
+  bottom: 'M18 6h28l3 52h-12l-5-34-5 34H15z',
+  dress: 'M25 4h14l-2 10 10 46H17l10-46z',
+  outerwear: 'M22 6l-13 6 2 46h13V22l8 10 8-10v36h13l2-46-13-6-10 16z',
+  shoes: 'M6 34c0-6 4-10 8-10 3 0 5 3 9 5 6 3 14 4 22 5 7 1 11 4 11 8v4H6z',
   accessory: 'M14 26a18 18 0 0 1 36 0v4H14z M10 30h44v6H10z',
 };
-
 const ACCESSORY_SHAPES = {
   Skärp: 'M4 27h40v10H4z M44 24h12v16H44z M48 28h4v8h-4z',
   Väska: 'M12 24h40l-3 30H15z M22 24c0-12 20-12 20 0h-4c0-7-12-7-12 0z',
@@ -48,265 +61,314 @@ const ACCESSORY_SHAPES = {
   Slips: 'M26 6h12l-2 8 6 34-10 10-10-10 6-34z',
 };
 
+let svgSeq = 0;
 function garmentSvg(item) {
-  const id = `p${item.id}`;
+  const id = `g${++svgSeq}`;
   const shape = ACCESSORY_SHAPES[item.subtype] ?? SHAPES[item.category] ?? SHAPES.top;
   let fill = item.color;
   let defs = '';
   if (item.color2) {
     const bold = item.pattern === 'bold';
-    defs = `<defs><pattern id="${id}" width="${bold ? 12 : 8}" height="${bold ? 12 : 8}" patternUnits="userSpaceOnUse">
-      <rect width="12" height="12" fill="${item.color}"/>
-      ${bold ? `<circle cx="6" cy="6" r="2.6" fill="${item.color2}"/>` : `<rect y="5" width="8" height="2" fill="${item.color2}"/>`}
-    </pattern></defs>`;
+    defs = `<defs><pattern id="${id}" width="${bold ? 12 : 8}" height="${bold ? 12 : 8}" patternUnits="userSpaceOnUse"><rect width="12" height="12" fill="${item.color}"/>${bold ? `<circle cx="6" cy="6" r="2.4" fill="${item.color2}"/>` : `<rect y="5" width="8" height="1.6" fill="${item.color2}"/>`}</pattern></defs>`;
     fill = `url(#${id})`;
   }
-  const stroke = colorFamily(item.color) === 'neutral' && textColorFor(item.color) === '#1a1a1a' ? 'rgba(0,0,0,.25)' : 'rgba(0,0,0,.15)';
-  return `<svg viewBox="0 0 64 64" class="garment" aria-hidden="true">${defs}<path d="${shape}" fill="${fill}" stroke="${stroke}" stroke-width="1.2" stroke-linejoin="round"/></svg>`;
+  return `<svg viewBox="0 0 64 64" aria-hidden="true">${defs}<path d="${shape}" fill="${fill}" stroke="rgba(0,0,0,.18)" stroke-width=".8" stroke-linejoin="round"/></svg>`;
 }
 
-function itemVisual(item) {
-  return item.photo
-    ? `<img src="${item.photo}" alt="" loading="lazy" />`
-    : garmentSvg(item);
+function visual(item) {
+  const url = item.hasPhoto ? photoUrl(item.id) : null;
+  return url ? `<img class="${item.cutout ? 'cut' : 'photo'}" src="${url}" alt="" loading="lazy" />` : garmentSvg(item);
 }
 
 // ---------- Navigering ----------
 function showView(name) {
-  $$('.tabs button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.view === name)));
+  $$('.nav button').forEach((b) => (b.dataset.view === name ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
   if (name === 'wardrobe') renderWardrobe();
-  if (name === 'favorites') renderFavorites();
-  if (name === 'colors') renderColorLab();
+  if (name === 'saved') renderSaved();
+  if (name === 'color') renderColorLab();
   window.scrollTo({ top: 0 });
 }
-$$('.tabs button').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
+$$('.nav button').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
 
-// ---------- Väder ----------
-async function refreshWeather() {
+// ---------- Väder & plats ----------
+async function startWeather({ forceLocate = false } = {}) {
   const s = state.settings;
-  if (s.manual) {
-    conditions = conditionsFrom({ temp: s.manual.temp, feelsLike: s.manual.temp, code: s.manual.rain ? 63 : s.manual.sunny ? 0 : 2 });
-    weatherStatus = 'manual';
+  if (s.manual && !forceLocate) {
+    wx.cond = conditionsFrom({ temp: s.manual.temp, feelsLike: s.manual.temp, code: s.manual.rain ? 63 : s.manual.sunny ? 0 : 2 });
+    wx.status = 'ok';
     renderWeather();
+    generate();
     return;
   }
-  if (!s.location) {
-    weatherStatus = 'idle';
-    conditions = null;
-    renderWeather();
-    return;
-  }
-  weatherStatus = 'loading';
-  renderWeather();
+  if (forceLocate || !s.location || s.location.source === 'gps') return locate();
+  return loadForecast(s.location);
+}
+
+async function locate() {
+  const s = state.settings;
+  wx.note = '';
+  if (!wx.cond) { wx.status = 'locating'; renderWeather(); }
   try {
-    conditions = await fetchWeather(s.location.lat, s.location.lon, s.day ?? 0);
-    weatherStatus = 'ok';
+    const pos = await getPosition();
+    const prev = s.location;
+    const moved = !prev || prev.source !== 'gps' || Math.abs(prev.lat - pos.lat) > 0.05 || Math.abs(prev.lon - pos.lon) > 0.05;
+    const name = moved ? await reverseGeocode(pos.lat, pos.lon) : prev.name;
+    s.location = { ...pos, name, source: 'gps' };
+    s.manual = null;
+    persist();
+    await loadForecast(s.location);
   } catch (e) {
-    weatherStatus = 'error';
-    weatherError = e.message;
-    conditions = null;
+    if (s.location) {
+      wx.note = e.message;
+      await loadForecast(s.location);
+    } else {
+      wx.status = 'error';
+      wx.error = e.message;
+      wx.panel = true;
+      wx.cond = null;
+      renderWeather();
+      generate();
+    }
+  }
+}
+
+async function loadForecast(loc) {
+  if (!wx.cond) { wx.status = 'locating'; renderWeather(); }
+  try {
+    wx.cond = await fetchWeather(loc.lat, loc.lon, state.settings.day ?? 0);
+    wx.status = 'ok';
+    wx.lastFetch = Date.now();
+  } catch (e) {
+    wx.status = wx.cond ? 'ok' : 'error';
+    wx.error = e.message;
+    if (wx.cond) wx.note = e.message; else wx.panel = true;
   }
   renderWeather();
+  generate();
+}
+
+function formatDay(date) {
+  const d = date ? new Date(`${date}T12:00`) : new Date();
+  return d.toLocaleDateString('sv-SE', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+
+function placePanel() {
+  const s = state.settings;
+  const manual = !!s.manual;
+  return `<div class="place-panel">
+    ${wx.status === 'error' && wx.error ? `<p>${esc(wx.error)}</p>` : ''}
+    <div><button class="btn" data-act="gps">Använd min position</button></div>
+    <form class="search" id="search"><input name="q" type="search" placeholder="Eller sök en ort" aria-label="Ort" /><button>Sök</button></form>
+    ${manual ? `<div class="manual-row">
+        <label class="range">Temperatur <output id="m-out">${s.manual.temp}°</output><input type="range" min="-20" max="35" value="${s.manual.temp}" id="m-temp" /></label>
+        <label class="switch"><input type="checkbox" id="m-rain" ${s.manual.rain ? 'checked' : ''} /> <span>Regn</span></label>
+        <label class="switch"><input type="checkbox" id="m-sun" ${s.manual.sunny ? 'checked' : ''} /> <span>Sol</span></label>
+      </div>` : '<div><button class="textbtn" data-act="manual">Ställ in vädret själv</button></div>'}
+  </div>`;
 }
 
 function renderWeather() {
-  const el = $('#weather');
+  const el = $('#forecast');
   const s = state.settings;
-  const dayToggle = `<div class="seg" role="group" aria-label="Dag">
-      <button data-day="0" aria-pressed="${!s.day}">Idag</button>
-      <button data-day="1" aria-pressed="${s.day === 1}">Imorgon</button></div>`;
-  const locForm = `<form class="loc-form" id="loc-form">
-      <input type="search" name="q" placeholder="Sök stad, t.ex. Göteborg" aria-label="Stad" />
-      <button class="btn small">Sök</button>
-      <button type="button" class="btn small ghost" id="geo">📍 Min plats</button>
-      <button type="button" class="btn small ghost" id="manual">Ställ in själv</button></form>`;
-
-  if (weatherStatus === 'idle') {
-    el.innerHTML = `<div class="w-empty"><h2>Vad blir det för väder?</h2><p>Välj plats så anpassas outfitsen efter temperatur, regn och vind.</p>${locForm}</div>`;
-  } else if (weatherStatus === 'loading') {
-    el.innerHTML = `<div class="w-empty"><p>Hämtar väder…</p></div>`;
-  } else if (weatherStatus === 'error') {
-    el.innerHTML = `<div class="w-empty"><p class="warn">${esc(weatherError)}</p>${locForm}</div>`;
-  } else {
-    const c = conditions;
-    const [desc, icon] = describeCode(c.code);
-    const manual = weatherStatus === 'manual';
-    el.innerHTML = `
-      <div class="w-main">
-        <div class="w-icon" aria-hidden="true">${icon}</div>
-        <div>
-          <div class="w-temp">${c.temp}°<small> känns som ${c.feelsLike}°</small></div>
-          <div class="w-desc">${esc(manual ? 'Manuellt väder' : desc)} · ${esc(manual ? '' : s.location?.name ?? '')}</div>
-          <div class="w-tags">
-            ${c.rain ? '<span class="tag">☔ Regn ' + (c.precipProb ? c.precipProb + '%' : '') + '</span>' : ''}
-            ${c.snow ? '<span class="tag">❄️ Snö</span>' : ''}
-            ${c.wind >= 8 ? `<span class="tag">💨 ${c.wind} m/s</span>` : ''}
-            <span class="tag level l${c.level}">${LEVEL_LABELS[c.level]}</span>
-          </div>
-        </div>
-      </div>
-      <div class="w-side">
-        ${manual ? `<div class="manual">
-            <label>Temperatur <output>${s.manual.temp}°</output><input type="range" min="-20" max="35" value="${s.manual.temp}" id="m-temp" /></label>
-            <label class="inline"><input type="checkbox" id="m-rain" ${s.manual.rain ? 'checked' : ''}/> Regn</label>
-            <label class="inline"><input type="checkbox" id="m-sun" ${s.manual.sunny ? 'checked' : ''}/> Sol</label>
-          </div>` : dayToggle}
-        <button class="link" id="change-loc">Byt plats</button>
-      </div>`;
+  if (wx.status === 'locating' || wx.status === 'idle') {
+    el.innerHTML = '<div class="locating"><span class="pulse"></span> Hämtar vädret där du är…</div>';
+    return;
   }
-  bindWeatherEvents();
+  if (!wx.cond) {
+    el.innerHTML = `<div class="fc-top"><span class="eyebrow">${esc(cap(formatDay()))}</span></div>
+      <p class="fc-desc">Var är du idag?</p>${placePanel()}`;
+    bindWeather();
+    return;
+  }
+  const c = wx.cond;
+  const [desc, kind] = describeCode(c.code);
+  const manual = !!s.manual;
+  const place = manual ? 'Eget väder' : s.location?.name ?? 'Okänd plats';
+  const parts = [
+    ...(manual ? [] : (c.parts ?? []).map((p) => [p.label, `${p.temp}°`])),
+    ['Känns som', `${c.feelsLike}°`],
+    ...(manual ? [] : [['Regn', `${c.precipProb}%`]]),
+    ...(c.wind >= 6 ? [['Vind', `${c.wind} m/s`]] : []),
+  ];
+  el.innerHTML = `
+    <div class="fc-top">
+      <span class="eyebrow">${esc(cap(formatDay(c.date)))}</span>
+      ${manual ? '' : `<div class="seg" role="group" aria-label="Dag">
+        <button data-day="0" aria-pressed="${!s.day}">Idag</button>
+        <button data-day="1" aria-pressed="${s.day === 1}">Imorgon</button></div>`}
+    </div>
+    <div class="fc-main">
+      <span class="fc-temp">${c.temp}°</span>
+      <div>
+        <div class="fc-desc">${esc(manual ? (c.rain ? 'Regn' : c.sunny ? 'Sol' : 'Uppehåll') : desc)}</div>
+        <button class="fc-place" data-act="place">${PIN} ${esc(place)}</button>
+      </div>
+      <span class="spacer"></span>
+      ${weatherIcon(manual ? (c.rain ? 'rain' : c.sunny ? 'sun' : 'partly') : kind)}
+    </div>
+    <dl class="fc-parts">${parts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
+    <p class="fc-advice">${esc(LEVEL_LABELS[c.level])}${c.rain ? ' Välj något som tål regn.' : ''}${c.snow ? ' Halkfria skor.' : ''}</p>
+    ${wx.note ? `<p class="fc-note">${esc(wx.note)}</p>` : ''}
+    ${wx.panel ? placePanel() : ''}`;
+  bindWeather();
 }
 
-function bindWeatherEvents() {
-  $('#loc-form')?.addEventListener('submit', async (e) => {
+function bindWeather() {
+  const el = $('#forecast');
+  el.onclick = async (e) => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    const day = e.target.closest('[data-day]')?.dataset.day;
+    if (act === 'place') { wx.panel = !wx.panel; renderWeather(); }
+    if (act === 'gps') {
+      wx.panel = false;
+      state.settings.manual = null;
+      wx.cond = null;
+      await startWeather({ forceLocate: true });
+    }
+    if (act === 'manual') {
+      state.settings.manual = { temp: wx.cond?.temp ?? 15, rain: !!wx.cond?.rain, sunny: !!wx.cond?.sunny };
+      persist();
+      await startWeather();
+    }
+    if (day !== undefined) {
+      state.settings.day = +day;
+      persist();
+      await loadForecast(state.settings.location);
+    }
+  };
+  $('#search')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const q = new FormData(e.target).get('q').trim();
     if (!q) return;
     try {
-      state.settings.location = await geocode(q);
+      state.settings.location = { ...(await geocode(q)), source: 'search' };
       state.settings.manual = null;
+      wx.panel = false;
+      wx.note = '';
       persist();
-      await refreshWeather();
-      autoGenerate();
+      await loadForecast(state.settings.location);
     } catch (err) {
-      weatherStatus = 'error';
-      weatherError = err.message;
-      renderWeather();
+      toast(err.message);
     }
   });
-  $('#geo')?.addEventListener('click', () => {
-    if (!navigator.geolocation) return toast('Platstjänster stöds inte');
-    navigator.geolocation.getCurrentPosition(async (pos) => {
-      state.settings.location = { lat: pos.coords.latitude, lon: pos.coords.longitude, name: 'Min plats' };
-      state.settings.manual = null;
-      persist();
-      await refreshWeather();
-      autoGenerate();
-    }, () => toast('Kunde inte hämta din plats'));
-  });
-  $('#manual')?.addEventListener('click', () => {
-    state.settings.manual = { temp: 15, rain: false, sunny: false };
-    persist();
-    refreshWeather().then(autoGenerate);
-  });
-  $('#change-loc')?.addEventListener('click', () => {
-    state.settings.location = null;
-    state.settings.manual = null;
-    persist();
-    refreshWeather();
-  });
-  $$('#weather [data-day]').forEach((b) => b.addEventListener('click', async () => {
-    state.settings.day = +b.dataset.day;
-    persist();
-    await refreshWeather();
-    autoGenerate();
-  }));
   const mt = $('#m-temp');
   if (mt) {
-    mt.addEventListener('input', () => { mt.previousElementSibling.textContent = `${mt.value}°`; });
-    mt.addEventListener('change', () => { state.settings.manual.temp = +mt.value; persist(); refreshWeather().then(autoGenerate); });
-    $('#m-rain').addEventListener('change', (e) => { state.settings.manual.rain = e.target.checked; persist(); refreshWeather().then(autoGenerate); });
-    $('#m-sun').addEventListener('change', (e) => { state.settings.manual.sunny = e.target.checked; persist(); refreshWeather().then(autoGenerate); });
+    const upd = () => { persist(); startWeather(); };
+    mt.addEventListener('input', () => { $('#m-out').textContent = `${mt.value}°`; });
+    mt.addEventListener('change', () => { state.settings.manual.temp = +mt.value; upd(); });
+    $('#m-rain').addEventListener('change', (e) => { state.settings.manual.rain = e.target.checked; upd(); });
+    $('#m-sun').addEventListener('change', (e) => { state.settings.manual.sunny = e.target.checked; upd(); });
   }
 }
 
-// ---------- Outfits ----------
-function renderStyleChips() {
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && state && !state.settings.manual && Date.now() - wx.lastFetch > 30 * 60 * 1000) {
+    startWeather();
+  }
+});
+
+// ---------- Looks ----------
+function renderStyleTabs() {
   const cur = state.settings.style || '';
-  const chips = [['', 'Alla stilar'], ...Object.entries(STYLES).map(([k, v]) => [k, v.label])];
-  $('#style-chips').innerHTML = chips
-    .map(([k, l]) => `<button class="chip" data-style="${k}" aria-pressed="${cur === k}">${esc(l)}</button>`)
+  const tabs = [['', 'Alla'], ...Object.entries(STYLES).map(([k, v]) => [k, v.label])];
+  $('#style-tabs').innerHTML = tabs
+    .map(([k, l]) => `<button role="tab" data-style="${k}" aria-selected="${cur === k}">${esc(l)}</button>`)
     .join('');
 }
-$('#style-chips').addEventListener('click', (e) => {
+$('#style-tabs').addEventListener('click', (e) => {
   const b = e.target.closest('[data-style]');
   if (!b) return;
   state.settings.style = b.dataset.style;
   persist();
-  renderStyleChips();
+  renderStyleTabs();
   generate();
 });
 
 function generate() {
   const w = state.wardrobe;
   const hasBase = (w.some((i) => i.category === 'top') && w.some((i) => i.category === 'bottom')) || w.some((i) => i.category === 'dress');
+  $('#looks-head').hidden = !hasBase;
+  $('#lock-hint').hidden = !hasBase;
   if (!hasBase) {
     outfits = [];
-    $('#outfits').innerHTML = `<div class="empty card">
-      <h3>Din garderob behöver lite fler plagg</h3>
-      <p>Lägg till minst en överdel och en underdel (eller en klänning) – gärna skor och en jacka också.</p>
-      <div class="row"><button class="btn primary" data-go="wardrobe">Lägg till plagg</button>
-      <button class="btn ghost" data-demo>Testa med exempelgarderob</button></div></div>`;
-    $('#lock-hint').hidden = true;
+    $('#looks').innerHTML = `<div class="empty">
+      <h2>${w.length ? 'Nästan där.' : 'Börja med garderoben.'}</h2>
+      <p>${w.length
+        ? 'Fota minst en överdel och en underdel, eller en klänning. Skor och en jacka gör förslagen bättre.'
+        : 'Fota dina kläder, ett plagg i taget eller många på en gång. Appen frilägger plaggen, läser av färgerna och sätter ihop outfits efter vädret där du är.'}</p>
+      <div class="row"><button class="btn" data-act="camera">Fota plagg</button>
+      ${w.length ? '' : '<button class="btn quiet" data-act="demo">Visa ett exempel</button>'}</div></div>`;
     return;
   }
   for (const id of [...locked]) if (!w.some((i) => i.id === id)) locked.delete(id);
-  outfits = generateOutfits(w, { conditions, style: state.settings.style || null, count: 6, locked: [...locked] });
-  renderOutfits();
+  outfits = generateOutfits(w, { conditions: wx.cond, style: state.settings.style || null, count: 6, locked: [...locked] });
+  renderLooks();
 }
 
-function autoGenerate() {
-  if (state.wardrobe.length) generate();
+function boardColumns(items) {
+  const of = (c) => items.filter((i) => i.category === c);
+  const [outer] = of('outerwear');
+  const [top] = of('top');
+  const [dress] = of('dress');
+  const [bottom] = of('bottom');
+  const [shoes] = of('shoes');
+  const acc = of('accessory');
+  const [left, right] = dress ? [[dress], [outer, shoes, ...acc]] : [[outer, top], [bottom, shoes, ...acc]];
+  return [left.filter(Boolean), right.filter(Boolean)];
 }
 
-function outfitCard(o, { saved = false } = {}) {
+function lookCard(o, n, { saved = false } = {}) {
   const pct = Math.round(o.total * 100);
-  const palette = [...new Set(o.items.flatMap((i) => [i.color, i.color2].filter(Boolean)))];
+  const palette = [...new Set(o.items.filter((i) => i.category !== 'accessory').flatMap((i) => [i.color, i.color2].filter(Boolean)))];
   const isFav = state.favorites.some((f) => f.key === o.id);
-  return `<article class="outfit card" data-id="${esc(o.id)}">
-    <div class="outfit-top">
-      <span class="badge">${esc(o.harmony)}</span>
-      <span class="score" style="--p:${pct}" title="Matchningspoäng">${pct}</span>
+  const piece = (i) => `<button class="piece w-${i.category} ${locked.has(i.id) && !saved ? 'locked' : ''}" data-item="${esc(i.id)}" ${saved ? 'disabled' : ''} aria-label="${esc(i.name)}">${visual(i)}</button>`;
+  const text = o.notes.slice(0, 2).join(' ');
+  return `<article class="look" data-id="${esc(o.id)}">
+    <div class="board">
+      <span class="eyebrow look-no">Look ${String(n).padStart(2, '0')}</span>
+      <span class="eyebrow look-score" title="Hur väl plaggen matchar, 0–100">${pct}</span>
+      ${boardColumns(o.items).map((c) => `<div class="col">${c.map(piece).join('')}</div>`).join('')}
     </div>
-    <div class="flatlay n${o.items.length}">
-      ${o.items.map((i) => `<button class="piece ${locked.has(i.id) ? 'locked' : ''}" data-item="${esc(i.id)}" title="${esc(i.name)}" ${saved ? 'disabled' : ''}>
-        ${itemVisual(i)}<span class="piece-name">${esc(i.name)}</span>${locked.has(i.id) ? '<span class="lock">🔒</span>' : ''}</button>`).join('')}
-    </div>
-    <div class="palette">${palette.map((c) => `<span style="background:${c}" title="${esc(colorName(c))}"></span>`).join('')}</div>
-    <ul class="notes">
-      ${o.notes.slice(0, 3).map((n) => `<li>${esc(n)}</li>`).join('')}
-      ${o.warnings.map((n) => `<li class="warn">${esc(n)}</li>`).join('')}
-    </ul>
-    <div class="meters">
-      ${meter('Färg', o.parts.color)}${meter('Stil', o.parts.style)}${conditions ? meter('Väder', o.parts.weather) : ''}
-    </div>
-    <div class="outfit-actions">
-      ${saved
-        ? `<button class="btn small ghost" data-unfav="${esc(o.id)}">Ta bort</button>`
-        : `<button class="btn small ghost" data-fav="${esc(o.id)}">${isFav ? '♥ Sparad' : '♡ Spara'}</button>`}
-      <button class="btn small" data-wear="${esc(o.id)}">✓ Har på mig idag</button>
+    <div class="look-meta">
+      <div class="look-title"><h3>${esc(o.harmony)}</h3><span class="chips">${palette.map((c) => `<i style="background:${c}" title="${esc(colorName(c))}"></i>`).join('')}</span></div>
+      ${text ? `<p class="look-text">${esc(text)}</p>` : ''}
+      <p class="look-items">${o.items.map((i) => esc(i.name)).join(' · ')}</p>
+      ${o.warnings.map((w) => `<p class="look-warn">${esc(w)}</p>`).join('')}
+      <div class="look-actions">
+        ${saved
+          ? `<button class="textbtn" data-unfav="${esc(o.id)}">Ta bort</button>`
+          : `<button class="textbtn" data-fav="${esc(o.id)}">${isFav ? 'Sparad' : 'Spara'}</button>`}
+        <button class="textbtn" data-wear="${esc(o.id)}">Bär idag</button>
+      </div>
     </div>
   </article>`;
 }
 
-function meter(label, v) {
-  return `<div class="meter"><span>${label}</span><i style="--v:${Math.round(v * 100)}%"></i></div>`;
-}
-
-function renderOutfits() {
-  const el = $('#outfits');
+function renderLooks() {
+  const el = $('#looks');
   if (!outfits.length) {
-    el.innerHTML = '<div class="empty card"><p>Hittade inga kombinationer. Prova en annan stil eller lås upp plagg.</p></div>';
+    el.innerHTML = '<div class="empty"><p>Inga kombinationer hittades. Prova en annan stil eller släpp ett låst plagg.</p></div>';
     return;
   }
-  el.innerHTML = outfits.map((o) => outfitCard(o)).join('');
-  $('#lock-hint').hidden = false;
-  $('#generate').textContent = 'Nya förslag';
+  const when = state.settings.manual || !wx.cond ? '' : state.settings.day === 1 ? ' för imorgon' : ' för idag';
+  $('#looks-count').textContent = `${outfits.length} förslag${when}`;
+  el.innerHTML = outfits.map((o, i) => lookCard(o, i + 1)).join('');
+  el.scrollLeft = 0;
 }
 
-$('#generate').addEventListener('click', generate);
+$('#shuffle').addEventListener('click', generate);
 
 document.addEventListener('click', (e) => {
-  const go = e.target.closest('[data-go]');
-  if (go) { showView(go.dataset.go); if (go.dataset.go === 'wardrobe') openEditor(); return; }
-  if (e.target.closest('[data-demo]')) { loadDemo(); return; }
+  const act = e.target.closest('[data-act]')?.dataset.act;
+  if (act === 'camera') { pickInto = 'queue'; $('#cam-input').click(); return; }
+  if (act === 'demo') { loadDemo(); return; }
 
-  const piece = e.target.closest('#outfits .piece');
+  const piece = e.target.closest('#looks .piece');
   if (piece) {
     const id = piece.dataset.item;
     if (locked.has(id)) locked.delete(id); else locked.add(id);
-    toast(locked.has(id) ? 'Låst – nya förslag byggs kring plagget' : 'Upplåst');
+    toast(locked.has(id) ? 'Plagget behålls i nästa omgång.' : 'Plagget släppt.');
     generate();
     return;
   }
@@ -316,11 +378,11 @@ document.addEventListener('click', (e) => {
     if (!o) return;
     if (state.favorites.some((f) => f.key === o.id)) {
       state.favorites = state.favorites.filter((f) => f.key !== o.id);
-      fav.textContent = '♡ Spara';
+      fav.textContent = 'Spara';
     } else {
       state.favorites.unshift({ key: o.id, itemIds: o.items.map((i) => i.id), savedAt: Date.now() });
-      fav.textContent = '♥ Sparad';
-      toast('Outfit sparad');
+      fav.textContent = 'Sparad';
+      toast('Sparad.');
     }
     persist();
     return;
@@ -329,7 +391,7 @@ document.addEventListener('click', (e) => {
   if (unfav) {
     state.favorites = state.favorites.filter((f) => f.key !== unfav.dataset.unfav);
     persist();
-    renderFavorites();
+    renderSaved();
     return;
   }
   const wear = e.target.closest('[data-wear]');
@@ -340,35 +402,33 @@ document.addEventListener('click', (e) => {
     state.history.unshift({ itemIds: ids, at: now });
     state.history = state.history.slice(0, 100);
     persist();
-    toast('Snyggt! Plaggen prioriteras ned några dagar för variation.');
+    toast('Noterat. Plaggen vilar några dagar så att det blir variation.');
   }
 });
 
-// ---------- Sparade ----------
-function renderFavorites() {
-  const el = $('#favorites');
+// ---------- Sparat ----------
+function renderSaved() {
   const list = state.favorites
     .map((f) => {
       const items = f.itemIds.map((id) => state.wardrobe.find((i) => i.id === id)).filter(Boolean);
-      if (!items.length) return null;
-      return { id: f.key, items, ...scoreOutfit(items, { conditions: null, style: null }) };
+      return items.length ? { id: f.key, items, ...scoreOutfit(items, { conditions: null, style: null }) } : null;
     })
     .filter(Boolean);
-  el.innerHTML = list.length
-    ? list.map((o) => outfitCard(o, { saved: true })).join('')
-    : '<div class="empty card"><p>Inga sparade outfits ännu. Tryck ♡ på ett förslag du gillar.</p></div>';
+  $('#saved').innerHTML = list.length
+    ? list.map((o, i) => lookCard(o, i + 1, { saved: true })).join('')
+    : '<div class="empty"><h2>Inget sparat än.</h2><p>Tryck på Spara under en look du gillar så hamnar den här.</p></div>';
 }
 
 // ---------- Garderob ----------
-function renderCategoryChips() {
+function renderCategoryTabs() {
   const counts = {};
   for (const i of state.wardrobe) counts[i.category] = (counts[i.category] || 0) + 1;
-  const chips = [['', 'Alla', state.wardrobe.length], ...Object.entries(CATEGORIES).map(([k, v]) => [k, v.label, counts[k] || 0])];
-  $('#category-chips').innerHTML = chips
-    .map(([k, l, n]) => `<button class="chip" data-cat="${k}" aria-pressed="${categoryFilter === k}">${esc(l)} <small>${n}</small></button>`)
+  const tabs = [['', 'Allt', state.wardrobe.length], ...Object.entries(CATEGORIES).map(([k, v]) => [k, v.plural, counts[k] || 0])];
+  $('#category-tabs').innerHTML = tabs
+    .map(([k, l, n]) => `<button role="tab" data-cat="${k}" aria-selected="${categoryFilter === k}">${esc(l)}<small>${n}</small></button>`)
     .join('');
 }
-$('#category-chips').addEventListener('click', (e) => {
+$('#category-tabs').addEventListener('click', (e) => {
   const b = e.target.closest('[data-cat]');
   if (!b) return;
   categoryFilter = b.dataset.cat;
@@ -376,22 +436,24 @@ $('#category-chips').addEventListener('click', (e) => {
 });
 
 function renderWardrobe() {
-  renderCategoryChips();
-  $('#wardrobe-count').textContent = `${state.wardrobe.length} plagg`;
+  renderCategoryTabs();
+  const n = state.wardrobe.length;
+  $('#wardrobe-count').textContent = `${n} plagg`;
   const items = state.wardrobe.filter((i) => !categoryFilter || i.category === categoryFilter);
   $('#wardrobe-grid').innerHTML = items.length
-    ? items.map((i) => `<button class="item card" data-edit="${esc(i.id)}">
-        <div class="item-visual">${itemVisual(i)}</div>
-        <div class="item-info">
-          <strong>${esc(i.name)}</strong>
-          <span class="dots"><i style="background:${i.color}"></i>${i.color2 ? `<i style="background:${i.color2}"></i>` : ''} ${esc(colorName(i.color))}</span>
-          <small>${esc(i.styles.map((s) => STYLES[s]?.label).filter(Boolean).join(' · '))}</small>
-        </div></button>`).join('')
-    : `<div class="empty card"><p>${state.wardrobe.length ? 'Inga plagg i den här kategorin.' : 'Garderoben är tom. Fota ditt första plagg!'}</p></div>`;
+    ? items.map((i) => `<button class="tile" data-edit="${esc(i.id)}">
+        <div class="tile-img">${visual(i)}</div>
+        <div class="tile-name">${esc(i.name)}</div>
+        <div class="tile-sub"><i style="background:${i.color}"></i>${i.color2 ? `<i style="background:${i.color2}"></i>` : ''}${esc(i.subtype)}</div>
+      </button>`).join('')
+    : `<div class="empty" style="grid-column:1/-1">
+        <h2>${n ? 'Inget här än.' : 'Fota din garderob.'}</h2>
+        <p>Lägg plagget plant på sängen eller golvet, eller häng det mot en ljus vägg, och fota rakt framifrån. Du kan välja många bilder på en gång och gå igenom dem en i taget.</p>
+      </div>`;
 }
 $('#wardrobe-grid').addEventListener('click', (e) => {
   const b = e.target.closest('[data-edit]');
-  if (b) openEditor(state.wardrobe.find((i) => i.id === b.dataset.edit));
+  if (b) openSheet(state.wardrobe.find((i) => i.id === b.dataset.edit));
 });
 
 function loadDemo() {
@@ -399,7 +461,7 @@ function loadDemo() {
   const add = demoWardrobe().filter((i) => !existing.has(i.id));
   state.wardrobe.push(...add);
   persist();
-  toast(`${add.length} exempelplagg tillagda`);
+  toast(`${add.length} exempelplagg tillagda.`);
   renderWardrobe();
   generate();
 }
@@ -410,190 +472,274 @@ $('#import').addEventListener('change', async (e) => {
   if (!f) return;
   try {
     state = await importJson(f);
-    persist();
-    toast('Backup importerad');
+    toast('Backup importerad.');
     renderWardrobe();
-    renderStyleChips();
-    refreshWeather().then(autoGenerate);
+    renderStyleTabs();
+    startWeather();
   } catch (err) {
     toast(err.message);
   }
   e.target.value = '';
 });
 
-// ---------- Plagg-editor ----------
-const dlg = $('#item-dialog');
-const form = $('#item-form');
-let editing = null;
-let photoData = null;
-let nameTouched = false;
+// ---------- Plaggark (foto → plagg) ----------
+const sheet = $('#sheet');
+let draft = null;
+let queue = [];
+let queueIndex = 0;
+let pickInto = 'queue';
 
-$('#f-category').innerHTML = Object.entries(CATEGORIES).map(([k, v]) => `<option value="${k}">${v.icon} ${esc(v.label)}</option>`).join('');
-$('#f-pattern').innerHTML = Object.entries(PATTERNS).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
-$('#f-styles').innerHTML = Object.entries(STYLES).map(([k, v]) => `<label class="chip check"><input type="checkbox" value="${k}" /> ${esc(v.label)}</label>`).join('');
-
-const WARMTH_TXT = ['–', 'Mycket tunn', 'Tunn', 'Medel', 'Varm', 'Mycket varm'];
+const BASIC_COLORS = ['#151515', '#f7f7f5', '#8a8a8a', '#1f2a44', '#4f6d8f', '#d9c5a0', '#6b4226', '#6b6b2a'];
+const WARMTH_TXT = ['Ingen', 'Mycket tunn', 'Tunn', 'Medel', 'Varm', 'Mycket varm'];
 const FORMAL_TXT = ['', 'Avslappnad', 'Vardag', 'Snygg vardag', 'Uppklädd', 'Formell'];
 
-function fillSubtypes(cat, selected) {
-  $('#f-subtype').innerHTML = SUBTYPES[cat].map(([n]) => `<option ${n === selected ? 'selected' : ''}>${esc(n)}</option>`).join('');
+$('#f-category').innerHTML = Object.entries(CATEGORIES).map(([k, v]) => `<button type="button" data-cat="${k}">${esc(v.label)}</button>`).join('');
+$('#f-pattern').innerHTML = Object.entries(PATTERNS).map(([k, v]) => `<button type="button" data-pattern="${k}">${esc(v)}</button>`).join('');
+$('#f-styles').innerHTML = Object.entries(STYLES).map(([k, v]) => `<label><input type="checkbox" value="${k}" />${esc(v.label)}</label>`).join('');
+
+function newDraft(category) {
+  const cat = category ?? state.settings.lastCategory ?? 'top';
+  const [sub, warmth, formality] = SUBTYPES[cat][0];
+  const d = {
+    id: null, category: cat, subtype: sub, warmth, formality, color: '#1f2a44', color2: null, pattern: 'solid',
+    styles: defaultStyles(formality), waterproof: false, name: '', nameTouched: false, stylesTouched: false,
+    photo: null, file: null, colors: [], busy: false,
+  };
+  d.name = `${colorName(d.color)} ${sub.toLowerCase()}`;
+  return d;
 }
 
-function applySubtypeDefaults() {
-  const cat = $('#f-category').value;
-  const st = SUBTYPES[cat].find(([n]) => n === $('#f-subtype').value);
-  if (!st) return;
-  $('#f-warmth').value = st[1];
-  $('#f-formality').value = st[2];
-  $('#f-waterproof').checked = ['Regnjacka', 'Gummistövlar', 'Parkas', 'Dunjacka', 'Trenchcoat'].includes(st[0]);
-  updateOutputs();
-  autoName();
-}
-
-function updateOutputs() {
-  $('#o-warmth').textContent = WARMTH_TXT[$('#f-warmth').value];
-  $('#o-formality').textContent = FORMAL_TXT[$('#f-formality').value];
-  $('#f-color-name').textContent = colorName($('#f-color').value);
+function openSheet(item = null) {
+  if (item) {
+    draft = {
+      ...newDraft(item.category), ...structuredClone(item), nameTouched: true, stylesTouched: true,
+      photo: item.hasPhoto && photoUrl(item.id) ? { url: photoUrl(item.id), cutout: !!item.cutout, blob: null } : null,
+      file: null, colors: [], busy: false,
+    };
+  } else {
+    draft = newDraft();
+  }
+  renderSheet();
+  if (!sheet.open) sheet.showModal();
+  sheet.scrollTop = 0;
 }
 
 function autoName() {
-  if (nameTouched) return;
-  const st = $('#f-subtype').value;
-  $('#f-name').value = `${colorName($('#f-color').value)} ${st.toLowerCase()}`;
+  if (draft.nameTouched) return;
+  draft.name = `${colorName(draft.color)} ${draft.subtype.toLowerCase()}`;
 }
 
-$('#f-category').addEventListener('change', () => { fillSubtypes($('#f-category').value); applySubtypeDefaults(); });
-$('#f-subtype').addEventListener('change', applySubtypeDefaults);
-$('#f-warmth').addEventListener('input', updateOutputs);
-$('#f-formality').addEventListener('input', updateOutputs);
-$('#f-color').addEventListener('input', () => { updateOutputs(); autoName(); });
-$('#f-color2').addEventListener('input', () => { $('#f-has-color2').checked = true; });
-$('#f-name').addEventListener('input', () => { nameTouched = true; });
-$$('[data-close]', dlg).forEach((b) => b.addEventListener('click', () => dlg.close()));
-
-function setPhoto(dataUrl) {
-  photoData = dataUrl;
-  $('#photo-preview').src = dataUrl || '';
-  $('#photo-preview').hidden = !dataUrl;
-  $('#photo-placeholder').hidden = !!dataUrl;
+function applySubtype(name) {
+  const st = SUBTYPES[draft.category].find(([n]) => n === name) ?? SUBTYPES[draft.category][0];
+  [draft.subtype, draft.warmth, draft.formality] = st;
+  draft.waterproof = ['Regnjacka', 'Gummistövlar', 'Parkas', 'Dunjacka', 'Trenchcoat', 'Vinterkängor'].includes(st[0]);
+  if (!draft.stylesTouched) draft.styles = defaultStyles(draft.formality);
+  autoName();
 }
 
-$('#photo-input').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
+function renderSheet() {
+  const d = draft;
+  if (!d) return;
+  const total = queue.length;
+  $('#sheet-title').textContent = d.id ? 'Redigera plagg' : total > 1 ? `Plagg ${queueIndex + 1} av ${total}` : 'Nytt plagg';
+  $('#delete-item').hidden = !d.id;
+  $('#save-item').textContent = !d.id && queueIndex < total - 1 ? 'Spara · nästa' : 'Spara';
+
+  // Foto
+  const ph = $('#ph');
+  ph.hidden = !d.photo || d.busy;
+  if (d.photo) {
+    if (ph.getAttribute('src') !== d.photo.url) ph.src = d.photo.url;
+    ph.className = d.photo.cutout ? 'cut' : 'photo';
+  }
+  $('#stage-empty').hidden = !!d.photo || d.busy;
+  $('#stage-status').hidden = !d.busy;
+  $('#stage-status').innerHTML = '<span class="pulse"></span> Frilägger och läser av färger';
+  $('#stage-tools').hidden = !d.photo || d.busy;
+  $('#f-cutout').closest('.switch').hidden = !d.file;
+  $('#f-cutout').checked = !!d.photo?.cutout;
+
+  // Färger
+  const options = d.colors.length ? d.colors.map((c) => c.hex) : BASIC_COLORS;
+  const opts = [...new Set([...options, d.color].filter(Boolean))];
+  const sw = (hex, role, pressed) => `<button type="button" class="sw" data-${role}="${hex}" style="background:${hex}" aria-pressed="${pressed}" title="${esc(colorName(hex))}"></button>`;
+  $('#sw-main').innerHTML = opts.map((h) => sw(h, 'main', h === d.color)).join('')
+    + `<label class="sw-custom" title="Egen färg">+<input type="color" data-custom="main" value="${d.color}" /></label>`
+    + `<span class="sw-name">${esc(colorName(d.color))}</span>`;
+  const opts2 = [...new Set([...options, d.color2].filter((h) => h && h !== d.color))];
+  $('#sw-second').innerHTML = `<button type="button" class="sw none" data-second="" aria-pressed="${!d.color2}" title="Ingen"></button>`
+    + opts2.map((h) => sw(h, 'second', h === d.color2)).join('')
+    + `<label class="sw-custom" title="Egen färg">+<input type="color" data-custom="second" value="${d.color2 ?? '#ffffff'}" /></label>`
+    + `<span class="sw-name">${d.color2 ? esc(colorName(d.color2)) : 'Ingen'}</span>`;
+
+  // Kategori & typ
+  $$('#f-category button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.cat === d.category)));
+  $('#f-subtype').innerHTML = SUBTYPES[d.category].map(([n]) => `<option ${n === d.subtype ? 'selected' : ''}>${esc(n)}</option>`).join('');
+  $('#f-name').value = d.name;
+
+  // Detaljer
+  $$('#f-pattern button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.pattern === d.pattern)));
+  $$('#f-styles input').forEach((c) => { c.checked = d.styles.includes(c.value); });
+  $('#f-warmth').value = d.warmth;
+  $('#f-formality').value = d.formality;
+  $('#o-warmth').textContent = WARMTH_TXT[d.warmth];
+  $('#o-formality').textContent = FORMAL_TXT[d.formality];
+  $('#f-waterproof').checked = !!d.waterproof;
+}
+
+async function loadPhoto(file) {
+  draft.file = file;
+  await processInto(draft, file, true);
+}
+
+async function processInto(d, file, cutout) {
+  d.busy = true;
+  renderSheet();
   try {
-    const img = await loadImage(file);
-    setPhoto(resizeToDataUrl(img));
-    const colors = extractColors(img, 4);
-    const row = $('#extracted');
-    row.innerHTML = colors.map((c, i) => `<button type="button" class="swatch" data-hex="${c.hex}" style="background:${c.hex};color:${textColorFor(c.hex)}" title="${esc(colorName(c.hex))}">
-      ${esc(colorName(c.hex))}<small>${Math.round(c.share * 100)}%</small>${i === 0 ? '<b>huvud</b>' : ''}</button>`).join('');
-    row.hidden = !colors.length;
-    $('#extracted-hint').hidden = colors.length < 2;
-    if (colors[0]) $('#f-color').value = colors[0].hex;
-    // Om en andra färg tar stor plats är plagget troligen mönstrat/flerfärgat.
-    if (colors[1] && colors[1].share > 0.15) {
-      $('#f-color2').value = colors[1].hex;
-      $('#f-has-color2').checked = true;
-    } else {
-      $('#f-has-color2').checked = false;
-    }
-    updateOutputs();
+    const res = await processPhoto(file, { cutout });
+    if (d !== draft) return;
+    if (d.photo?.blob) URL.revokeObjectURL(d.photo.url);
+    d.photo = { blob: res.blob, url: URL.createObjectURL(res.blob), cutout: res.cutout };
+    d.colors = res.colors;
+    if (res.colors[0]) d.color = res.colors[0].hex;
+    d.color2 = res.colors[1] && res.colors[1].share > 0.15 ? res.colors[1].hex : null;
+    if (d.color2 && d.pattern === 'solid') d.pattern = 'subtle';
+    if (cutout && !res.cutout) toast('Bakgrunden var för rörig för att frilägga. Fotot sparas som det är.');
     autoName();
   } catch (err) {
     toast(err.message);
   }
-});
-
-$('#extracted').addEventListener('click', (e) => {
-  const s = e.target.closest('[data-hex]');
-  if (!s) return;
-  $('#f-color').value = s.dataset.hex;
-  updateOutputs();
-  autoName();
-});
-$('#extracted').addEventListener('contextmenu', (e) => {
-  const s = e.target.closest('[data-hex]');
-  if (!s) return;
-  e.preventDefault();
-  $('#f-color2').value = s.dataset.hex;
-  $('#f-has-color2').checked = true;
-  toast(`Andrafärg: ${colorName(s.dataset.hex)}`);
-});
-
-function openEditor(item = null) {
-  editing = item;
-  nameTouched = !!item;
-  form.reset();
-  $('#extracted').hidden = true;
-  $('#extracted-hint').hidden = true;
-  $('#item-dialog-title').textContent = item ? 'Redigera plagg' : 'Nytt plagg';
-  $('#delete-item').hidden = !item;
-  const cat = item?.category ?? (categoryFilter || 'top');
-  $('#f-category').value = cat;
-  fillSubtypes(cat, item?.subtype);
-  if (item) {
-    $('#f-name').value = item.name;
-    $('#f-color').value = item.color;
-    $('#f-has-color2').checked = !!item.color2;
-    $('#f-color2').value = item.color2 || '#ffffff';
-    $('#f-pattern').value = item.pattern || 'solid';
-    $$('#f-styles input').forEach((c) => { c.checked = item.styles.includes(c.value); });
-    $('#f-warmth').value = item.warmth;
-    $('#f-formality').value = item.formality;
-    $('#f-waterproof').checked = !!item.waterproof;
-    setPhoto(item.photo);
-    updateOutputs();
-  } else {
-    setPhoto(null);
-    applySubtypeDefaults();
-  }
-  dlg.showModal();
+  d.busy = false;
+  renderSheet();
 }
-$('#add-item').addEventListener('click', () => openEditor());
 
-form.addEventListener('submit', (e) => {
+$('#add-camera').addEventListener('click', () => { pickInto = 'queue'; $('#cam-input').click(); });
+$('#add-library').addEventListener('click', () => { pickInto = 'queue'; $('#lib-input').click(); });
+$$('[data-pick]').forEach((b) => b.addEventListener('click', () => {
+  pickInto = 'draft';
+  $(b.dataset.pick === 'cam' ? '#cam-input' : '#lib-input').click();
+}));
+
+async function onFiles(e) {
+  const files = [...e.target.files];
+  e.target.value = '';
+  if (!files.length) return;
+  if (pickInto === 'draft' && sheet.open && draft) {
+    await loadPhoto(files[0]);
+    return;
+  }
+  queue = files;
+  queueIndex = 0;
+  openSheet();
+  await loadPhoto(queue[0]);
+}
+$('#cam-input').addEventListener('change', onFiles);
+$('#lib-input').addEventListener('change', onFiles);
+
+$('#f-cutout').addEventListener('change', (e) => {
+  if (draft?.file) processInto(draft, draft.file, e.target.checked);
+});
+
+$('#item-form').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-main],[data-second],[data-cat],[data-pattern]');
+  if (!t || !draft) return;
+  if (t.dataset.main !== undefined) { draft.color = t.dataset.main; if (draft.color2 === draft.color) draft.color2 = null; autoName(); }
+  if (t.dataset.second !== undefined) draft.color2 = t.dataset.second || null;
+  if (t.dataset.cat) { draft.category = t.dataset.cat; applySubtype(SUBTYPES[draft.category][0][0]); }
+  if (t.dataset.pattern) draft.pattern = t.dataset.pattern;
+  renderSheet();
+});
+$('#item-form').addEventListener('input', (e) => {
+  const c = e.target.dataset.custom;
+  if (!c || !draft) return;
+  if (c === 'main') { draft.color = e.target.value; autoName(); }
+  else draft.color2 = e.target.value;
+  $$('.sw-name')[c === 'main' ? 0 : 1].textContent = colorName(e.target.value);
+});
+$('#item-form').addEventListener('change', (e) => {
+  if (e.target.dataset.custom) renderSheet();
+});
+$('#f-subtype').addEventListener('change', (e) => { applySubtype(e.target.value); renderSheet(); });
+$('#f-name').addEventListener('input', (e) => { draft.name = e.target.value; draft.nameTouched = true; });
+$('#f-styles').addEventListener('change', () => {
+  draft.styles = $$('#f-styles input:checked').map((c) => c.value);
+  draft.stylesTouched = true;
+});
+$('#f-warmth').addEventListener('input', (e) => { draft.warmth = +e.target.value; $('#o-warmth').textContent = WARMTH_TXT[draft.warmth]; });
+$('#f-formality').addEventListener('input', (e) => { draft.formality = +e.target.value; $('#o-formality').textContent = FORMAL_TXT[draft.formality]; });
+$('#f-waterproof').addEventListener('change', (e) => { draft.waterproof = e.target.checked; });
+$$('[data-close]', sheet).forEach((b) => b.addEventListener('click', () => sheet.close()));
+sheet.addEventListener('close', () => { queue = []; queueIndex = 0; draft = null; });
+
+$('#item-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const styles = $$('#f-styles input:checked').map((c) => c.value);
-  const data = {
-    name: $('#f-name').value.trim() || `${colorName($('#f-color').value)} ${$('#f-subtype').value.toLowerCase()}`,
-    category: $('#f-category').value,
-    subtype: $('#f-subtype').value,
-    color: $('#f-color').value,
-    color2: $('#f-has-color2').checked ? $('#f-color2').value : null,
-    pattern: $('#f-pattern').value,
-    styles: styles.length ? styles : ['casual'],
-    warmth: +$('#f-warmth').value,
-    formality: +$('#f-formality').value,
-    waterproof: $('#f-waterproof').checked,
-    photo: photoData,
+  const d = draft;
+  if (!d || d.busy) return;
+  const isNew = !d.id;
+  const id = d.id ?? uid();
+  const item = {
+    id,
+    name: d.name.trim() || `${colorName(d.color)} ${d.subtype.toLowerCase()}`,
+    category: d.category,
+    subtype: d.subtype,
+    color: d.color,
+    color2: d.color2,
+    pattern: d.pattern,
+    styles: d.styles.length ? d.styles : defaultStyles(d.formality),
+    warmth: d.warmth,
+    formality: d.formality,
+    waterproof: d.waterproof,
+    hasPhoto: !!d.photo,
+    cutout: !!d.photo?.cutout,
+    addedAt: d.addedAt ?? Date.now(),
+    lastWorn: d.lastWorn ?? null,
   };
-  if (editing) Object.assign(editing, data);
-  else state.wardrobe.push({ id: uid(), addedAt: Date.now(), ...data });
-  if (persist()) {
-    dlg.close();
-    toast(editing ? 'Plagget uppdaterat' : 'Plagget tillagt');
-    renderWardrobe();
+  if (d.photo?.blob) await putPhoto(id, d.photo.blob);
+  if (isNew) state.wardrobe.unshift(item);
+  else Object.assign(state.wardrobe.find((i) => i.id === id), item);
+  state.settings.lastCategory = d.category;
+  persist();
+  renderWardrobe();
+  generate();
+
+  if (isNew && queueIndex < queue.length - 1) {
+    queueIndex++;
+    draft = newDraft(d.category);
+    sheet.scrollTop = 0;
+    await loadPhoto(queue[queueIndex]);
+  } else {
+    sheet.close();
+    toast(isNew ? `${item.name} är tillagd.` : 'Sparat.');
   }
 });
 
-$('#delete-item').addEventListener('click', () => {
-  if (!editing || !confirm(`Ta bort "${editing.name}"?`)) return;
-  state.wardrobe = state.wardrobe.filter((i) => i !== editing);
-  locked.delete(editing.id);
+$('#delete-item').addEventListener('click', async () => {
+  if (!draft?.id || !confirm(`Ta bort ${draft.name}?`)) return;
+  const id = draft.id;
+  state.wardrobe = state.wardrobe.filter((i) => i.id !== id);
+  state.favorites = state.favorites.filter((f) => !f.itemIds.includes(id));
+  locked.delete(id);
+  await deletePhoto(id);
   persist();
-  dlg.close();
+  sheet.close();
   renderWardrobe();
+  generate();
 });
 
-// ---------- Färglära ----------
+// ---------- Färg ----------
 function renderColorLab() {
   const hex = $('#lab-color').value;
   const fam = colorFamily(hex);
-  const famTxt = { neutral: 'neutral – passar med nästan allt', earth: 'jordton – fungerar som neutral', navy: 'marinblå – en klassisk neutral', denim: 'denim – en vardagsneutral', chromatic: 'kulör – använd som accent eller huvudfärg' }[fam];
-  $('#lab-name').innerHTML = `<strong>${esc(colorName(hex))}</strong> · ${esc(famTxt)}`;
+  $('#lab-name').textContent = colorName(hex);
+  $('#lab-kind').textContent = {
+    neutral: 'En neutral. Den bär nästan vad som helst.',
+    earth: 'En jordton som fungerar som neutral.',
+    navy: 'Marinblått, en klassisk neutral.',
+    denim: 'Denim, vardagens neutral.',
+    chromatic: 'En kulör. Använd den som accent, eller låt den bära outfiten mot neutraler.',
+  }[fam];
   $('#lab-suggest').innerHTML = suggestMatches(hex)
-    .map((s) => `<span class="swatch" style="background:${s.hex};color:${textColorFor(s.hex)}">${esc(s.label)}<small>${esc(colorName(s.hex))}</small></span>`)
+    .map((s) => `<div style="background:${s.hex};color:${textColorFor(s.hex)}"><small>${esc(s.label)}</small>${esc(colorName(s.hex))}</div>`)
     .join('');
   const matches = state.wardrobe
     .map((i) => ({ i, h: paletteHarmony([{ hex, weight: 0.5 }, { hex: i.color, weight: 0.5 }]) }))
@@ -601,12 +747,16 @@ function renderColorLab() {
     .sort((a, b) => b.h.score - a.h.score)
     .slice(0, 12);
   $('#lab-matches').innerHTML = matches.length
-    ? matches.map(({ i, h }) => `<div class="mini" title="${esc(h.label)}">${itemVisual(i)}<span>${esc(i.name)}</span></div>`).join('')
-    : '<p class="hint">Lägg till plagg för att se matchningar.</p>';
+    ? matches.map(({ i }) => `<div class="tile"><div class="tile-img">${visual(i)}</div><div class="tile-name">${esc(i.name)}</div></div>`).join('')
+    : '<p class="lab-kind">Fota några plagg så visas de som passar här.</p>';
 }
 $('#lab-color').addEventListener('input', renderColorLab);
 
 // ---------- Start ----------
-renderStyleChips();
-renderWeather();
-refreshWeather().then(generate); // visar tomt läge med instruktioner om garderoben är tom
+(async () => {
+  state = await init();
+  renderStyleTabs();
+  renderWardrobe();
+  generate();
+  await startWeather();
+})();

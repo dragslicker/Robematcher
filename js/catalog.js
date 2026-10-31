@@ -1,12 +1,12 @@
 // Kategorier, stilar och plaggtyper.
 
 export const CATEGORIES = {
-  top: { label: 'Överdel', icon: '👕' },
-  bottom: { label: 'Underdel', icon: '👖' },
-  dress: { label: 'Klänning / jumpsuit', icon: '👗' },
-  outerwear: { label: 'Ytterplagg', icon: '🧥' },
-  shoes: { label: 'Skor', icon: '👟' },
-  accessory: { label: 'Accessoar', icon: '🧣' },
+  top: { label: 'Överdel', plural: 'Överdelar' },
+  bottom: { label: 'Underdel', plural: 'Underdelar' },
+  dress: { label: 'Klänning', plural: 'Klänningar' },
+  outerwear: { label: 'Ytterplagg', plural: 'Ytterplagg' },
+  shoes: { label: 'Skor', plural: 'Skor' },
+  accessory: { label: 'Accessoar', plural: 'Accessoarer' },
 };
 
 // Plaggtyper med förvalda värden för värme (1–5) och formalitet (1–5).
@@ -56,10 +56,21 @@ export const STYLES = {
 
 export const PATTERNS = {
   solid: 'Enfärgad',
-  subtle: 'Diskret mönster (melerad, tunn rand)',
-  bold: 'Tydligt mönster (rutor, print, blommor)',
+  subtle: 'Diskret mönster',
+  bold: 'Tydligt mönster',
 };
 
 // Accessoarer som passar i viss väderlek.
 export const COLD_ACCESSORIES = new Set(['Halsduk', 'Mössa']);
 export const SUN_ACCESSORIES = new Set(['Solglasögon', 'Keps']);
+
+// Rimliga stilar utifrån plaggets formalitet, så att man inte måste välja själv.
+export function defaultStyles(formality) {
+  return {
+    1: ['casual', 'street', 'sporty'],
+    2: ['casual', 'minimal', 'street'],
+    3: ['smart', 'classic', 'casual', 'minimal'],
+    4: ['smart', 'business', 'classic'],
+    5: ['business', 'classic', 'party'],
+  }[formality] ?? ['casual'];
+}

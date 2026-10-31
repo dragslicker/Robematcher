@@ -83,3 +83,32 @@ test('sandaler passar dåligt i regn', () => {
 test('tom garderob ger inga förslag', () => {
   assert.deepEqual(generateOutfits([], {}), []);
 });
+
+test('prognosen sammanfattas för rätt dag och tid', async () => {
+  const { summarizeForecast } = await import('../js/weather.js');
+  const time = [];
+  const temps = [];
+  for (const day of ['2026-10-31', '2026-11-01']) {
+    for (let h = 0; h < 24; h++) {
+      time.push(`${day}T${String(h).padStart(2, '0')}:00`);
+      temps.push(day === '2026-10-31' ? 5 + (h >= 12 ? 4 : 0) : -2);
+    }
+  }
+  const n = time.length;
+  const d = {
+    current: { time: '2026-10-31T13:15', temperature_2m: 9.4, apparent_temperature: 7.1, weather_code: 3 },
+    hourly: {
+      time, temperature_2m: temps, apparent_temperature: temps.map((t) => t - 2),
+      precipitation_probability: Array(n).fill(10), precipitation: Array(n).fill(0),
+      weather_code: time.map((t) => (t.startsWith('2026-11-01') ? 73 : 3)), wind_speed_10m: Array(n).fill(3),
+    },
+  };
+  const today = summarizeForecast(d, 0);
+  assert.equal(today.temp, 9);
+  assert.deepEqual(today.parts.map((p) => p.temp), [5, 9, 9]);
+  assert.equal(today.snow, false);
+  const tomorrow = summarizeForecast(d, 1);
+  assert.equal(tomorrow.date, '2026-11-01');
+  assert.equal(tomorrow.snow, true);
+  assert.equal(tomorrow.level, 5);
+});
