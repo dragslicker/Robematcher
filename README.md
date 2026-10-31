@@ -4,11 +4,14 @@ Din garderob, fotograferad. Fota dina kläder, så sätter appen ihop outfits ef
 
 ## Funktioner
 
-- **Kläderna läggs in via foto.** Fota ett plagg eller välj många bilder på en gång och gå igenom dem en i taget ("Plagg 2 av 8"). Appen:
-  - **frilägger plagget** från bakgrunden (säng, golv eller vägg) och beskär bilden, så att outfits ser ut som ett lookbook,
-  - **läser av huvudfärg och detaljfärg** från det frilagda plagget,
-  - **minns senaste kategorin**, så att det går fort att fota alla tröjor i rad,
-  - fyller i namn, värme, formalitet, stilar och regntålighet utifrån plaggtypen. Allt går att ändra under "Fler detaljer".
+- **Snabb skanning av hela garderoben.** "Skanna plagg" öppnar en kamera där du fotar i följd, utan att något formulär öppnas mellan bilderna. Du kan också välja många bilder på en gång. Allt bearbetas i bakgrunden och hamnar i **Att granska**:
+  - bakgrunden tas bort och bilden beskärs, så att outfits ser ut som ett lookbook,
+  - **flera plagg på samma foto** blir separata plagg om de inte rör varandra (ett skopar hålls ihop),
+  - **Claude känner igen plaggen**: typ, svenskt namn, färger, mönster, stil, värme, formalitet och om plagget tål regn. Upp till sex bilder analyseras i samma anrop,
+  - du kontrollerar listan och trycker **Spara alla**, eller öppnar ett plagg för att ändra det.
+- **Stylisten (Claude).** Skriv vad du ska göra ("middag med vänner", "jobbintervju"). Claude ser hela garderoben, vädret och vald stil, och föreslår looks med motivering och stylingtips. Svaren kontrolleras mot garderoben, så att bara riktiga plagg i giltiga kombinationer visas. Regelmotorn finns kvar och ger förslag direkt, även utan Claude.
+  - Öppnad via claude.ai används Claude på ditt eget konto, utan nyckel.
+  - På andra adresser (t.ex. GitHub Pages) kan du ansluta en egen API-nyckel från Anthropic. Den sparas bara i webbläsaren och skickas bara till Anthropic.
 - **Vädret där du är.** Appen hämtar din position automatiskt (webbläsarens platstjänst), visar ortnamnet och prognosen för morgon, lunch och kväll, upplevd temperatur, regnrisk och vind. Den uppdateras när du öppnar appen igen. Du kan också söka en ort eller ställa in vädret själv. Väder från [Open-Meteo](https://open-meteo.com) och ortnamn från BigDataCloud, båda gratis och utan API-nyckel.
 - **Outfitgenerator** som poängsätter varje kombination på:
   - **Färgharmoni**: neutral bas + accent, ton-i-ton, analoga färger, komplementfärger, triad. Dämpade komplementfärger premieras före skrikiga. Fler än tre kulörer straffas.
@@ -55,6 +58,7 @@ Testerna täcker färgklassning, harmonier och outfitmotorn (väder, stil, låsn
 | `js/weather.js` | Position, ortnamn, prognos och översättning till klädbehov |
 | `js/catalog.js` | Kategorier, plaggtyper, stilar och mönster |
 | `js/image.js` | Frilägning, beskärning och färgavläsning av foton |
-| `js/app.js` | Gränssnittet |
+| `js/ai.js` | Claude: plaggigenkänning, stylist, validering av svar |
+| `js/app.js` | Gränssnittet, skanner och granskningslista |
 | `js/storage.js` | Lagring i IndexedDB (data + foton) och backup |
 | `js/demo.js` | Exempelgarderob |

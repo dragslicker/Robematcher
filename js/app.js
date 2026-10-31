@@ -6,6 +6,10 @@ import {
 } from './weather.js';
 import { init, save, uid, exportJson, importJson, photoUrl, putPhoto, deletePhoto } from './storage.js';
 import { processPhoto } from './image.js';
+import {
+  initAI, onAIChange, aiAvailable, aiKind, aiErrorText, tagGarments, maxImagesPerCall, askStylist,
+  getStoredKey, setApiKey,
+} from './ai.js';
 import { demoWardrobe } from './demo.js';
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -303,6 +307,7 @@ function generate() {
   const w = state.wardrobe;
   const hasBase = (w.some((i) => i.category === 'top') && w.some((i) => i.category === 'bottom')) || w.some((i) => i.category === 'dress');
   $('#looks-head').hidden = !hasBase;
+  if (!hasBase) $('#stylist').hidden = true;
   $('#lock-hint').hidden = !hasBase;
   if (!hasBase) {
     outfits = [];
@@ -315,6 +320,7 @@ function generate() {
       ${w.length ? '' : '<button class="btn quiet" data-act="demo">Visa ett exempel</button>'}</div></div>`;
     return;
   }
+  renderStylist();
   for (const id of [...locked]) if (!w.some((i) => i.id === id)) locked.delete(id);
   outfits = generateOutfits(w, { conditions: wx.cond, style: state.settings.style || null, count: 6, locked: [...locked] });
   renderLooks();
@@ -332,23 +338,25 @@ function boardColumns(items) {
   return [left.filter(Boolean), right.filter(Boolean)];
 }
 
-function lookCard(o, n, { saved = false } = {}) {
+function lookCard(o, n, { saved = false, ai = false } = {}) {
   const pct = Math.round(o.total * 100);
   const palette = [...new Set(o.items.filter((i) => i.category !== 'accessory').flatMap((i) => [i.color, i.color2].filter(Boolean)))];
   const isFav = state.favorites.some((f) => f.key === o.id);
-  const piece = (i) => `<button class="piece w-${i.category} ${locked.has(i.id) && !saved ? 'locked' : ''}" data-item="${esc(i.id)}" ${saved ? 'disabled' : ''} aria-label="${esc(i.name)}">${visual(i)}</button>`;
-  const text = o.notes.slice(0, 2).join(' ');
+  const fixed = saved || ai;
+  const piece = (i) => `<button class="piece w-${i.category} ${locked.has(i.id) && !fixed ? 'locked' : ''}" data-item="${esc(i.id)}" ${fixed ? 'disabled' : ''} aria-label="${esc(i.name)}">${visual(i)}</button>`;
+  const text = ai ? [o.why, o.tip && `Tips: ${o.tip}`].filter(Boolean).join(' ') : o.notes.slice(0, 2).join(' ');
+  const title = ai && o.title ? o.title : o.harmony;
   return `<article class="look" data-id="${esc(o.id)}">
     <div class="board">
-      <span class="eyebrow look-no">Look ${String(n).padStart(2, '0')}</span>
+      <span class="eyebrow look-no">${ai ? 'Stylistens val' : 'Look'} ${String(n).padStart(2, '0')}</span>
       <span class="eyebrow look-score" title="Hur väl plaggen matchar, 0–100">${pct}</span>
       ${boardColumns(o.items).map((c) => `<div class="col">${c.map(piece).join('')}</div>`).join('')}
     </div>
     <div class="look-meta">
-      <div class="look-title"><h3>${esc(o.harmony)}</h3><span class="chips">${palette.map((c) => `<i style="background:${c}" title="${esc(colorName(c))}"></i>`).join('')}</span></div>
+      <div class="look-title"><h3>${esc(title)}</h3><span class="chips">${palette.map((c) => `<i style="background:${c}" title="${esc(colorName(c))}"></i>`).join('')}</span></div>
       ${text ? `<p class="look-text">${esc(text)}</p>` : ''}
       <p class="look-items">${o.items.map((i) => esc(i.name)).join(' · ')}</p>
-      ${o.warnings.map((w) => `<p class="look-warn">${esc(w)}</p>`).join('')}
+      ${(ai ? o.warnings.slice(0, 1) : o.warnings).map((w) => `<p class="look-warn">${esc(w)}</p>`).join('')}
       <div class="look-actions">
         ${saved
           ? `<button class="textbtn" data-unfav="${esc(o.id)}">Ta bort</button>`
@@ -375,7 +383,7 @@ $('#shuffle').addEventListener('click', generate);
 
 document.addEventListener('click', (e) => {
   const act = e.target.closest('[data-act]')?.dataset.act;
-  if (act === 'camera') { pickInto = 'queue'; $('#cam-input').click(); return; }
+  if (act === 'camera') { showView('wardrobe'); openScanner(); return; }
   if (act === 'demo') { loadDemo(); return; }
 
   const piece = e.target.closest('#looks .piece');
@@ -388,7 +396,7 @@ document.addEventListener('click', (e) => {
   }
   const fav = e.target.closest('[data-fav]');
   if (fav) {
-    const o = outfits.find((x) => x.id === fav.dataset.fav);
+    const o = [...outfits, ...aiLooks].find((x) => x.id === fav.dataset.fav);
     if (!o) return;
     if (state.favorites.some((f) => f.key === o.id)) {
       state.favorites = state.favorites.filter((f) => f.key !== o.id);
@@ -410,7 +418,7 @@ document.addEventListener('click', (e) => {
   }
   const wear = e.target.closest('[data-wear]');
   if (wear) {
-    const ids = wear.dataset.wear.split('+');
+    const ids = wear.dataset.wear.replace(/^ai:/, '').split('+');
     const now = Date.now();
     for (const i of state.wardrobe) if (ids.includes(i.id)) i.lastWorn = now;
     state.history.unshift({ itemIds: ids, at: now });
@@ -450,6 +458,7 @@ $('#category-tabs').addEventListener('click', (e) => {
 });
 
 function renderWardrobe() {
+  renderInbox();
   renderCategoryTabs();
   const n = state.wardrobe.length;
   $('#wardrobe-count').textContent = `${n} plagg`;
@@ -499,9 +508,7 @@ $('#import').addEventListener('change', async (e) => {
 // ---------- Plaggark (foto → plagg) ----------
 const sheet = $('#sheet');
 let draft = null;
-let queue = [];
-let queueIndex = 0;
-let pickInto = 'queue';
+let pickInto = 'scan';
 
 const BASIC_COLORS = ['#151515', '#f7f7f5', '#8a8a8a', '#1f2a44', '#4f6d8f', '#d9c5a0', '#6b4226', '#6b6b2a'];
 const WARMTH_TXT = ['Ingen', 'Mycket tunn', 'Tunn', 'Medel', 'Varm', 'Mycket varm'];
@@ -556,11 +563,10 @@ function applySubtype(name) {
 function renderSheet() {
   const d = draft;
   if (!d) return;
-  const total = queue.length;
-  $('#sheet-title').textContent = d.id ? 'Redigera plagg' : total > 1 ? `Plagg ${queueIndex + 1} av ${total}` : 'Nytt plagg';
-  $('#delete-item').hidden = !d.id;
+  $('#sheet-title').textContent = d.fromInbox ? 'Granska plagg' : d.id ? 'Redigera plagg' : 'Nytt plagg';
+  $('#delete-item').hidden = !d.id && !d.fromInbox;
   if (!d.id) { $('#delete-item').dataset.armed = ''; $('#delete-item').textContent = 'Ta bort'; }
-  $('#save-item').textContent = !d.id && queueIndex < total - 1 ? 'Spara · nästa' : 'Spara';
+  $('#save-item').textContent = d.fromInbox ? 'Lägg i garderoben' : 'Spara';
 
   // Foto
   const ph = $('#ph');
@@ -630,8 +636,8 @@ async function processInto(d, file, cutout) {
   renderSheet();
 }
 
-$('#add-camera').addEventListener('click', () => { pickInto = 'queue'; $('#cam-input').click(); });
-$('#add-library').addEventListener('click', () => { pickInto = 'queue'; $('#lib-input').click(); });
+$('#add-camera').addEventListener('click', () => openScanner());
+$('#add-library').addEventListener('click', () => { pickInto = 'scan'; $('#lib-input').click(); });
 $$('[data-pick]').forEach((b) => b.addEventListener('click', () => {
   pickInto = 'draft';
   $(b.dataset.pick === 'cam' ? '#cam-input' : '#lib-input').click();
@@ -645,10 +651,8 @@ async function onFiles(e) {
     await loadPhoto(files[0]);
     return;
   }
-  queue = files;
-  queueIndex = 0;
-  openSheet();
-  await loadPhoto(queue[0]);
+  showView('wardrobe');
+  files.forEach((f) => enqueuePhoto(f));
 }
 $('#cam-input').addEventListener('change', onFiles);
 $('#lib-input').addEventListener('change', onFiles);
@@ -686,13 +690,13 @@ $('#f-warmth').addEventListener('input', (e) => { draft.warmth = +e.target.value
 $('#f-formality').addEventListener('input', (e) => { draft.formality = +e.target.value; $('#o-formality').textContent = FORMAL_TXT[draft.formality]; });
 $('#f-waterproof').addEventListener('change', (e) => { draft.waterproof = e.target.checked; });
 $$('[data-close]', sheet).forEach((b) => b.addEventListener('click', () => sheet.close()));
-sheet.addEventListener('close', () => { queue = []; queueIndex = 0; draft = null; });
+sheet.addEventListener('close', () => { draft = null; });
 
 $('#item-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const d = draft;
   if (!d || d.busy) return;
-  const isNew = !d.id;
+  const isNew = !d.id || d.fromInbox;
   const id = d.id ?? uid();
   const item = {
     id,
@@ -712,21 +716,23 @@ $('#item-form').addEventListener('submit', async (e) => {
     lastWorn: d.lastWorn ?? null,
   };
   if (d.photo?.blob) await putPhoto(id, d.photo.blob);
-  if (isNew) state.wardrobe.unshift(item);
+  if (d.fromInbox) {
+    state.inbox = state.inbox.filter((x) => x.id !== id);
+    state.wardrobe.unshift(item);
+  } else if (isNew) state.wardrobe.unshift(item);
   else Object.assign(state.wardrobe.find((i) => i.id === id), item);
   state.settings.lastCategory = d.category;
   persist();
   renderWardrobe();
   generate();
 
-  if (isNew && queueIndex < queue.length - 1) {
-    queueIndex++;
-    draft = newDraft(d.category);
-    sheet.scrollTop = 0;
-    await loadPhoto(queue[queueIndex]);
+  const next = d.fromInbox && state.inbox.find((x) => x.status === 'ready' && !x.placeholder);
+  if (next) {
+    toast(`${item.name} ligger i garderoben.`);
+    openSheet({ ...next, fromInbox: true });
   } else {
     sheet.close();
-    toast(isNew ? `${item.name} är tillagd.` : 'Sparat.');
+    toast(isNew ? `${item.name} ligger i garderoben.` : 'Sparat.');
   }
 });
 
@@ -742,6 +748,15 @@ $('#delete-item').addEventListener('click', async (e) => {
   }
   btn.dataset.armed = '';
   btn.textContent = 'Ta bort';
+  if (draft.fromInbox) {
+    const iid = draft.id;
+    state.inbox = state.inbox.filter((x) => x.id !== iid);
+    await deletePhoto(iid);
+    persist();
+    sheet.close();
+    renderWardrobe();
+    return;
+  }
   const id = draft.id;
   state.wardrobe = state.wardrobe.filter((i) => i.id !== id);
   state.favorites = state.favorites.filter((f) => !f.itemIds.includes(id));
@@ -751,6 +766,336 @@ $('#delete-item').addEventListener('click', async (e) => {
   sheet.close();
   renderWardrobe();
   generate();
+});
+
+// ---------- Skanning: foto → granskningslista ----------
+// Varje foto friläggs i bakgrunden. Ligger flera plagg på samma bild blir de
+// separata plagg. Claude (om tillgängligt) känner igen plaggen i omgångar.
+const work = [];          // foton som väntar på frilägning
+let working = false;
+const pendingTag = new Set(); // inbox-id som väntar på Claude
+let tagTimer = null;
+let tagging = false;
+let aiErrorShown = false;
+
+function guessCategory(w, h) {
+  const r = w / h;
+  if (r >= 1.55) return 'shoes';
+  if (r <= 0.68) return 'bottom';
+  return state.settings.lastCategory ?? 'top';
+}
+
+function inboxItemFrom(part, id) {
+  const category = part.cutout ? guessCategory(part.width, part.height) : (state.settings.lastCategory ?? 'top');
+  const [subtype, warmth, formality] = SUBTYPES[category][0];
+  const color = part.colors[0]?.hex ?? '#888888';
+  const color2 = part.colors[1] && part.colors[1].share > 0.15 ? part.colors[1].hex : null;
+  return {
+    id, category, subtype, warmth, formality, color, color2,
+    pattern: color2 ? 'subtle' : 'solid',
+    styles: defaultStyles(formality),
+    waterproof: false,
+    name: `${colorName(color)} ${subtype.toLowerCase()}`,
+    hasPhoto: true,
+    cutout: part.cutout,
+    colors: part.colors,
+    addedAt: Date.now(),
+    status: aiAvailable() ? 'tagging' : 'ready',
+    ai: false,
+  };
+}
+
+function enqueuePhoto(blob) {
+  const tmp = `tmp${uid()}`;
+  work.push({ blob, tmp });
+  state.inbox.unshift({ id: tmp, status: 'processing', name: 'Frilägger…', hasPhoto: false, category: '', placeholder: true });
+  renderWardrobe();
+  runWork();
+}
+
+async function runWork() {
+  if (working) return;
+  working = true;
+  while (work.length) {
+    const { blob, tmp } = work.shift();
+    try {
+      const parts = await processPhoto(blob, { cutout: true, split: true });
+      const items = [];
+      for (const part of parts) {
+        const id = uid();
+        await putPhoto(id, part.blob);
+        items.push(inboxItemFrom(part, id));
+      }
+      const at = state.inbox.findIndex((x) => x.id === tmp);
+      state.inbox.splice(at < 0 ? 0 : at, at < 0 ? 0 : 1, ...items);
+      if (aiAvailable()) for (const it of items) pendingTag.add(it.id);
+      if (parts.length > 1) toast(`${parts.length} plagg hittades på bilden.`);
+    } catch (err) {
+      state.inbox = state.inbox.filter((x) => x.id !== tmp);
+      toast(err.message || 'Kunde inte läsa bilden.');
+    }
+    persist();
+    renderWardrobe();
+    updateScannerCount();
+    scheduleTagging();
+  }
+  working = false;
+}
+
+function scheduleTagging() {
+  clearTimeout(tagTimer);
+  if (!pendingTag.size || !aiAvailable()) return;
+  // Vänta lite så att flera foton i rad går i samma anrop.
+  tagTimer = setTimeout(runTagging, work.length ? 2500 : 900);
+}
+
+async function runTagging() {
+  if (tagging || !pendingTag.size) return;
+  tagging = true;
+  while (pendingTag.size && aiAvailable()) {
+    const ids = [...pendingTag].slice(0, maxImagesPerCall());
+    ids.forEach((id) => pendingTag.delete(id));
+    const items = ids.map((id) => state.inbox.find((x) => x.id === id)).filter(Boolean);
+    if (!items.length) continue;
+    try {
+      const blobs = await Promise.all(items.map(async (it) => (await fetch(photoUrl(it.id))).blob()));
+      const tags = await tagGarments(blobs);
+      items.forEach((it, k) => {
+        const t = tags[k];
+        it.status = 'ready';
+        if (!t) return;
+        if (!t.isGarment) { it.note = 'Claude hittade inget plagg på bilden.'; return; }
+        Object.assign(it, {
+          category: t.category, subtype: t.subtype, name: t.name || `${colorName(t.color ?? it.color)} ${t.subtype.toLowerCase()}`,
+          color: t.color ?? it.color, color2: t.color2, pattern: t.pattern,
+          styles: t.styles.length ? t.styles : defaultStyles(t.formality),
+          warmth: t.warmth, formality: t.formality, waterproof: t.waterproof, ai: true,
+        });
+      });
+    } catch (err) {
+      items.forEach((it) => { it.status = 'ready'; });
+      if (!aiErrorShown) { toast(aiErrorText(err)); aiErrorShown = true; }
+      if (['not_granted', 'sampling_disabled', 'bad_key'].includes(err.code)) pendingTag.clear();
+    }
+    persist();
+    renderWardrobe();
+  }
+  tagging = false;
+}
+
+function inboxCard(it) {
+  const busy = it.status === 'processing' || it.status === 'tagging';
+  const status = it.status === 'processing' ? 'Frilägger' : it.status === 'tagging' ? 'Claude tittar' : it.note ? 'Kontrollera' : it.ai ? 'Klar' : 'Kontrollera';
+  return `<div class="tile inbox-tile ${busy ? 'busy' : ''}">
+    <button class="tile-img" data-review="${esc(it.id)}" ${it.placeholder ? 'disabled' : ''} aria-label="Granska ${esc(it.name)}">
+      ${it.placeholder ? '<span class="pulse"></span>' : visual(it)}
+    </button>
+    <div class="tile-name">${esc(it.name)}</div>
+    <div class="tile-sub">${it.placeholder ? '' : `<i style="background:${it.color}"></i>${it.color2 ? `<i style="background:${it.color2}"></i>` : ''}`}<span class="status ${busy ? 'is-busy' : ''}">${esc(status)}</span></div>
+    ${it.placeholder ? '' : `<button class="tile-x" data-discard="${esc(it.id)}" aria-label="Släng">×</button>`}
+  </div>`;
+}
+
+function renderInbox() {
+  const el = $('#inbox');
+  const list = state.inbox;
+  el.hidden = !list.length;
+  if (!list.length) { el.innerHTML = ''; return; }
+  const ready = list.filter((x) => x.status === 'ready').length;
+  const busy = list.length - ready;
+  el.innerHTML = `<div class="inbox-head">
+      <div><h2 class="eyebrow">Att granska · ${list.length}</h2>
+      <p class="inbox-note">${busy ? `${busy} bearbetas fortfarande. ` : ''}${aiAvailable() ? 'Claude har fyllt i typ, färg och stil. Tryck på ett plagg för att ändra.' : 'Tryck på ett plagg för att ställa in typ. Med stylisten aktiverad fyller Claude i det åt dig.'}</p></div>
+      <button class="btn" data-act="accept-all" ${ready ? '' : 'disabled'}>Spara ${ready === list.length ? 'alla' : ready}</button>
+    </div>
+    <div class="wardrobe">${list.map(inboxCard).join('')}</div>`;
+}
+
+
+document.addEventListener('click', async (e) => {
+  const rev = e.target.closest('[data-review]');
+  if (rev) {
+    const it = state.inbox.find((x) => x.id === rev.dataset.review);
+    if (it && !it.placeholder) openSheet({ ...it, fromInbox: true });
+    return;
+  }
+  const dis = e.target.closest('[data-discard]');
+  if (dis) {
+    const id = dis.dataset.discard;
+    state.inbox = state.inbox.filter((x) => x.id !== id);
+    pendingTag.delete(id);
+    await deletePhoto(id);
+    persist();
+    renderWardrobe();
+    return;
+  }
+  if (e.target.closest('[data-act="accept-all"]')) {
+    const ready = state.inbox.filter((x) => x.status === 'ready');
+    for (const it of ready) {
+      const { status, colors, ai, note, placeholder, ...item } = it;
+      state.wardrobe.unshift(item);
+    }
+    state.inbox = state.inbox.filter((x) => x.status !== 'ready');
+    if (ready.length) state.settings.lastCategory = ready[0].category;
+    persist();
+    renderWardrobe();
+    generate();
+    toast(`${ready.length} plagg sparade i garderoben.`);
+  }
+});
+
+// ---------- Kameraskanner ----------
+const scanner = $('#scanner');
+let stream = null;
+let shots = 0;
+
+async function openScanner() {
+  // Fungerar inte live-kamera (t.ex. inne i claude.ai eller utan https) används telefonens kamera-app.
+  if (!navigator.mediaDevices?.getUserMedia) { pickInto = 'scan'; $('#cam-input').click(); return; }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1920 } },
+      audio: false,
+    });
+  } catch {
+    pickInto = 'scan';
+    $('#cam-input').click();
+    return;
+  }
+  shots = 0;
+  $('#scan-video').srcObject = stream;
+  scanner.hidden = false;
+  document.body.classList.add('scanning');
+  updateScannerCount();
+}
+
+function closeScanner() {
+  stream?.getTracks().forEach((t) => t.stop());
+  stream = null;
+  scanner.hidden = true;
+  document.body.classList.remove('scanning');
+  showView('wardrobe');
+}
+
+function updateScannerCount() {
+  if (scanner.hidden) return;
+  const processing = work.length + (working ? 1 : 0);
+  $('#scan-count').textContent = shots ? `${shots} foto${shots > 1 ? 'n' : ''}${processing ? ` · ${processing} bearbetas` : ''}` : 'Inga foton än';
+}
+
+$('#scan-shutter').addEventListener('click', async () => {
+  const v = $('#scan-video');
+  if (!v.videoWidth) return;
+  const c = document.createElement('canvas');
+  c.width = v.videoWidth;
+  c.height = v.videoHeight;
+  c.getContext('2d').drawImage(v, 0, 0);
+  scanner.classList.remove('flash');
+  void scanner.offsetWidth;
+  scanner.classList.add('flash');
+  const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.9));
+  $('#scan-thumb').src = URL.createObjectURL(blob);
+  $('#scan-thumb').hidden = false;
+  shots++;
+  enqueuePhoto(blob);
+  updateScannerCount();
+});
+$('#scan-done').addEventListener('click', closeScanner);
+$('#scan-library').addEventListener('click', () => { pickInto = 'scan'; $('#lib-input').click(); });
+
+// ---------- Stylisten (Claude) ----------
+let aiLooks = [];
+let stylistCtl = null;
+
+function renderStylist() {
+  const el = $('#stylist');
+  const kind = aiKind();
+  const hasBase = state.wardrobe.some((i) => i.category === 'dress') || (state.wardrobe.some((i) => i.category === 'top') && state.wardrobe.some((i) => i.category === 'bottom'));
+  if (!hasBase) { el.hidden = true; return; }
+  el.hidden = false;
+  if (!kind) {
+    const key = getStoredKey();
+    el.innerHTML = `<div class="stylist-off">
+      <p><strong>Stylisten.</strong> Låt Claude sätta ihop looks utifrån tillfälle, väder och färglära, och känna igen plaggen när du skannar. Öppna appen via claude.ai-länken, eller anslut med en egen API-nyckel från Anthropic.</p>
+      <details class="key"><summary>Anslut API-nyckel</summary>
+        <form id="key-form" class="search"><input id="key-input" type="password" autocomplete="off" placeholder="sk-ant-…" value="${esc(key)}" aria-label="API-nyckel" /><button>Spara</button></form>
+        <p class="fine">Nyckeln sparas bara i den här webbläsaren och skickas endast till Anthropic. Anropen kostar enligt ditt API-konto.</p>
+      </details></div>`;
+    $('#key-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      await setApiKey($('#key-input').value.trim());
+      toast(aiAvailable() ? 'Stylisten är ansluten.' : 'Nyckeln togs bort.');
+    });
+    return;
+  }
+  el.innerHTML = `<form class="ask" id="ask-form">
+      <label class="eyebrow" for="occasion">Vad ska du göra?</label>
+      <div class="ask-row">
+        <input id="occasion" type="text" autocomplete="off" placeholder="Middag med vänner, jobbintervju, fotbollsmatch…" value="${esc(state.settings.occasion ?? '')}" />
+        <button class="btn" id="ask-btn">Fråga stylisten</button>
+      </div>
+      <p class="fine" id="ask-status">${kind === 'api' ? 'Claude via din API-nyckel. ' : ''}Stylisten ser hela garderoben, vädret och stilen du valt.${kind === 'api' ? ' <button type="button" class="linkbtn" id="key-remove">Koppla från nyckeln</button>' : ''}</p>
+    </form>
+    <div id="ai-looks" class="looks"></div>`;
+  $('#ask-form').addEventListener('submit', (e) => { e.preventDefault(); runStylist(); });
+  $('#key-remove')?.addEventListener('click', async () => { await setApiKey(''); toast('Nyckeln togs bort.'); });
+  renderAiLooks();
+}
+
+function renderAiLooks() {
+  const el = $('#ai-looks');
+  if (!el) return;
+  el.innerHTML = aiLooks.map((l, i) => lookCard(l, i + 1, { ai: true })).join('');
+  el.hidden = !aiLooks.length;
+}
+
+async function runStylist() {
+  if (stylistCtl) { stylistCtl.abort = true; }
+  const ctl = { abort: false };
+  stylistCtl = ctl;
+  const btn = $('#ask-btn');
+  const status = $('#ask-status');
+  state.settings.occasion = $('#occasion').value;
+  persist();
+  btn.disabled = true;
+  btn.textContent = 'Stylisten tänker…';
+  status.textContent = 'Claude går igenom garderoben. Det tar oftast 10–40 sekunder.';
+  try {
+    const looks = await askStylist({
+      wardrobe: state.wardrobe,
+      conditions: wx.cond,
+      style: state.settings.style || null,
+      occasion: state.settings.occasion,
+      candidates: outfits,
+    });
+    if (ctl.abort) return;
+    aiLooks = looks.map((l) => {
+      const sc = scoreOutfit(l.items, { conditions: wx.cond, style: state.settings.style || null });
+      return { ...sc, ...l, id: `ai:${l.items.map((i) => i.id).join('+')}`, items: sortForBoard(l.items) };
+    });
+    status.textContent = aiLooks.length ? `${aiLooks.length} ${aiLooks.length === 1 ? 'look' : 'looks'} från stylisten. Fråga igen för fler förslag.` : 'Stylisten hittade inga giltiga kombinationer. Prova att beskriva tillfället annorlunda.';
+    renderAiLooks();
+  } catch (err) {
+    status.textContent = aiErrorText(err);
+  } finally {
+    if (stylistCtl === ctl) {
+      btn.disabled = false;
+      btn.textContent = 'Fråga stylisten';
+    }
+  }
+}
+
+function sortForBoard(items) {
+  const order = ['outerwear', 'top', 'dress', 'bottom', 'shoes', 'accessory'];
+  return [...items].sort((a, b) => order.indexOf(a.category) - order.indexOf(b.category));
+}
+
+onAIChange(() => {
+  renderStylist();
+  renderInbox();
+  // Plagg som skannades innan Claude blev tillgängligt.
+  for (const it of state?.inbox ?? []) if (it.status === 'ready' && !it.ai && !it.placeholder && !it.note) { it.status = 'tagging'; pendingTag.add(it.id); }
+  scheduleTagging();
 });
 
 // ---------- Färg ----------
@@ -782,6 +1127,9 @@ $('#lab-color').addEventListener('input', renderColorLab);
 // ---------- Start ----------
 (async () => {
   state = await init();
+  // Plagg som var mitt i bearbetning när appen stängdes.
+  state.inbox = state.inbox.filter((x) => !x.placeholder).map((x) => (x.status === 'tagging' ? { ...x, status: 'ready' } : x));
+  initAI();
   renderStyleTabs();
   renderWardrobe();
   generate();

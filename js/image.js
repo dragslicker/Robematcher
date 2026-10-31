@@ -74,66 +74,141 @@ export function removeBackground(src) {
     if (y < H - 1) seed(x, y + 1);
   }
 
-  let bgCount = 0;
-  let minX = W, minY = H, maxX = 0, maxY = 0;
-  for (let p = 0; p < W * H; p++) {
-    if (mask[p]) { bgCount++; continue; }
-    const x = p % W, y = (p / W) | 0;
-    if (x < minX) minX = x; if (x > maxX) maxX = x;
-    if (y < minY) minY = y; if (y > maxY) maxY = y;
+  // Hitta sammanhängande plagg (komponenter) i förgrunden.
+  const labels = new Int32Array(W * H).fill(-1);
+  const comps = [];
+  const q = new Int32Array(W * H);
+  for (let p0 = 0; p0 < W * H; p0++) {
+    if (mask[p0] || labels[p0] !== -1) continue;
+    const id = comps.length;
+    const c = { id, area: 0, minX: W, minY: H, maxX: 0, maxY: 0, r: 0, g: 0, b: 0 };
+    let head = 0, tail = 0;
+    q[tail++] = p0;
+    labels[p0] = id;
+    while (head < tail) {
+      const p = q[head++];
+      const x = p % W, y = (p / W) | 0;
+      c.area++;
+      c.r += d[p * 4]; c.g += d[p * 4 + 1]; c.b += d[p * 4 + 2];
+      if (x < c.minX) c.minX = x; if (x > c.maxX) c.maxX = x;
+      if (y < c.minY) c.minY = y; if (y > c.maxY) c.maxY = y;
+      const nb = [x > 0 ? p - 1 : -1, x < W - 1 ? p + 1 : -1, y > 0 ? p - W : -1, y < H - 1 ? p + W : -1];
+      for (const n of nb) if (n >= 0 && !mask[n] && labels[n] === -1) { labels[n] = id; q[tail++] = n; }
+    }
+    c.r /= c.area; c.g /= c.area; c.b /= c.area;
+    comps.push(c);
   }
-  const fgShare = 1 - bgCount / (W * H);
+  const total = comps.reduce((a, c) => a + c.area, 0);
+  const fgShare = total / (W * H);
   if (fgShare < 0.04 || fgShare > 0.95) return null;
 
-  // Mjuka kanter: alfa = andel förgrund i 3×3-grannskapet.
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      let fg = 0, n = 0;
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const xx = x + dx, yy = y + dy;
-          if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
-          n++;
-          if (!mask[yy * W + xx]) fg++;
-        }
+  // Släng småfläckar (smulor, ludd, skuggkanter).
+  const largest = Math.max(...comps.map((c) => c.area));
+  let kept = comps.filter((c) => c.area >= Math.max(W * H * 0.012, largest * 0.12));
+
+  // Slå ihop delar som hör ihop: t.ex. två skor i ett par (lika stora,
+  // samma färg, nära varandra).
+  const parent = kept.map((_, i) => i);
+  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const gapLimit = Math.max(W, H) * 0.08;
+  for (let i = 0; i < kept.length; i++) {
+    for (let j = i + 1; j < kept.length; j++) {
+      const a = kept[i], b = kept[j];
+      const gx = Math.max(0, Math.max(a.minX, b.minX) - Math.min(a.maxX, b.maxX));
+      const gy = Math.max(0, Math.max(a.minY, b.minY) - Math.min(a.maxY, b.maxY));
+      const ratio = a.area / b.area;
+      if (Math.hypot(gx, gy) < gapLimit && ratio > 0.45 && ratio < 2.2 && dist(a.r, a.g, a.b, b.r, b.g, b.b) < 45) {
+        parent[find(i)] = find(j);
       }
-      d[(y * W + x) * 4 + 3] = Math.round((fg / n) ** 1.5 * 255);
     }
   }
-  ctx.putImageData(img, 0, 0);
+  const groups = new Map();
+  kept.forEach((c, i) => {
+    const r = find(i);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r).push(c.id);
+  });
+  return [...groups.values()].map((ids) => cutPart(src, d, W, H, labels, new Set(ids), comps));
+}
 
-  // Beskär till plagget med lite luft runt.
-  const pad = Math.round(Math.max(maxX - minX, maxY - minY) * 0.05);
+// Skapar en frilagd, beskuren bild av de komponenter som ingår i `ids`.
+function cutPart(src, d, W, H, labels, ids, comps) {
+  let minX = W, minY = H, maxX = 0, maxY = 0;
+  for (const id of ids) {
+    const c = comps[id];
+    minX = Math.min(minX, c.minX); minY = Math.min(minY, c.minY);
+    maxX = Math.max(maxX, c.maxX); maxY = Math.max(maxY, c.maxY);
+  }
+  const pad = Math.round(Math.max(maxX - minX, maxY - minY) * 0.05) + 2;
   const cx = Math.max(0, minX - pad), cy = Math.max(0, minY - pad);
   const cw = Math.min(W, maxX + pad + 1) - cx, ch = Math.min(H, maxY + pad + 1) - cy;
   const out = document.createElement('canvas');
   out.width = cw;
   out.height = ch;
-  out.getContext('2d').drawImage(src, cx, cy, cw, ch, 0, 0, cw, ch);
+  const octx = out.getContext('2d');
+  const od = octx.createImageData(cw, ch);
+  const inPart = (x, y) => x >= 0 && y >= 0 && x < W && y < H && ids.has(labels[y * W + x]);
+  for (let y = 0; y < ch; y++) {
+    for (let x = 0; x < cw; x++) {
+      const sx = x + cx, sy = y + cy;
+      const si = (sy * W + sx) * 4, oi = (y * cw + x) * 4;
+      // Mjuka kanter: alfa = andel av 3×3-grannskapet som hör till plagget.
+      let fg = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (inPart(sx + dx, sy + dy)) fg++;
+      od.data[oi] = d[si]; od.data[oi + 1] = d[si + 1]; od.data[oi + 2] = d[si + 2];
+      od.data[oi + 3] = Math.round((fg / 9) ** 1.5 * 255);
+    }
+  }
+  octx.putImageData(od, 0, 0);
   return out;
 }
 
 const toBlob = (canvas, type, q) => new Promise((resolve) => canvas.toBlob(resolve, type, q));
 
-// Hela kedjan för ett nytt foto.
-export async function processPhoto(file, { cutout = true } = {}) {
+async function encode(canvas, cutout) {
+  if (!cutout) return toBlob(canvas, 'image/jpeg', 0.84);
+  let blob = await toBlob(canvas, 'image/webp', 0.86);
+  if (!blob || blob.type !== 'image/webp') blob = await toBlob(canvas, 'image/png');
+  return blob;
+}
+
+// Hela kedjan för ett nytt foto. Med `split` blir varje separat plagg på
+// bilden ett eget resultat (lägg plaggen med lite mellanrum).
+export async function processPhoto(file, { cutout = true, split = false } = {}) {
   const img = await loadImage(file);
-  const base = canvasFrom(img, 720);
-  let canvas = base;
-  let cutoutDone = false;
+  let parts = null;
   if (cutout) {
-    const work = canvasFrom(img, 720);
-    const cut = removeBackground(work);
-    if (cut) { canvas = cut; cutoutDone = true; }
+    parts = removeBackground(canvasFrom(img, 720));
+    if (parts && !split && parts.length > 1) {
+      // Utan uppdelning: behåll det största plagget.
+      parts = [parts.sort((a, b) => b.width * b.height - a.width * a.height)[0]];
+    }
   }
-  let blob;
-  if (cutoutDone) {
-    blob = await toBlob(canvas, 'image/webp', 0.86);
-    if (!blob || blob.type !== 'image/webp') blob = await toBlob(canvas, 'image/png');
-  } else {
-    blob = await toBlob(canvas, 'image/jpeg', 0.84);
+  if (!parts) {
+    const canvas = canvasFrom(img, 720);
+    const blob = await encode(canvas, false);
+    const out = [{ blob, cutout: false, colors: extractColors(canvas, 4), width: canvas.width, height: canvas.height }];
+    return split ? out : out[0];
   }
-  return { blob, cutout: cutoutDone, colors: extractColors(canvas, 4), image: img };
+  const out = [];
+  for (const canvas of parts) {
+    out.push({ blob: await encode(canvas, true), cutout: true, colors: extractColors(canvas, 4), width: canvas.width, height: canvas.height });
+  }
+  return split ? out : out[0];
+}
+
+// Gör en liten JPEG på neutral bakgrund att skicka till Claude.
+export async function imageForAI(blob, max = 640) {
+  const img = await loadImage(blob);
+  const scale = Math.min(1, max / Math.max(img.width, img.height));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(img.width * scale));
+  c.height = Math.max(1, Math.round(img.height * scale));
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#ece8e1';
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(img, 0, 0, c.width, c.height);
+  return toBlob(c, 'image/jpeg', 0.85);
 }
 
 // Hittar dominerande färger. Genomskinliga pixlar ignoreras; finns ingen

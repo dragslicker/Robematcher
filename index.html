@@ -35,6 +35,8 @@
 
       <div class="tabs" id="style-tabs" role="tablist" aria-label="Stil"></div>
 
+      <section class="stylist" id="stylist" hidden></section>
+
       <div class="looks-head" id="looks-head" hidden>
         <span class="eyebrow" id="looks-count"></span>
         <button class="textbtn" id="shuffle">Blanda om</button>
@@ -49,6 +51,7 @@
         <h1>Garderob</h1>
         <span class="eyebrow" id="wardrobe-count"></span>
       </div>
+      <section class="inbox" id="inbox" hidden></section>
       <div class="tabs" id="category-tabs" role="tablist" aria-label="Kategori"></div>
       <div id="wardrobe-grid" class="wardrobe"></div>
       <div class="wardrobe-tools">
@@ -57,7 +60,7 @@
         <label class="textbtn">Importera backup<input type="file" id="import" accept="application/json" hidden /></label>
       </div>
       <div class="add-bar">
-        <button class="btn" id="add-camera">Fota plagg</button>
+        <button class="btn" id="add-camera">Skanna plagg</button>
         <button class="btn quiet" id="add-library">Välj bilder</button>
       </div>
     </section>
@@ -166,6 +169,21 @@
       </div>
     </form>
   </dialog>
+
+  <!-- KAMERASKANNER -->
+  <div class="scanner" id="scanner" hidden>
+    <video id="scan-video" autoplay playsinline muted></video>
+    <div class="scan-top">
+      <span id="scan-count">Inga foton än</span>
+      <button class="scan-done" id="scan-done">Klar</button>
+    </div>
+    <p class="scan-hint">Fota ett eller flera plagg på en jämn yta. Plagg som inte rör varandra blir separata.</p>
+    <div class="scan-bottom">
+      <button class="scan-side" id="scan-library">Bilder</button>
+      <button class="scan-shutter" id="scan-shutter" aria-label="Ta foto"></button>
+      <span class="scan-side"><img id="scan-thumb" alt="" hidden /></span>
+    </div>
+  </div>
 
   <div id="toast" role="status" aria-live="polite"></div>
 

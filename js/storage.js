@@ -6,6 +6,7 @@ const LEGACY_KEY = 'robematcher:v1';
 
 const DEFAULT_STATE = {
   wardrobe: [],
+  inbox: [],
   favorites: [],
   history: [],
   settings: { location: null, style: '', day: 0, lastCategory: 'top' },
