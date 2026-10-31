@@ -12,7 +12,7 @@
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --paper: #121110;
     --card: #1a1918;
     --board: #201e1b;
@@ -22,6 +22,16 @@
     --accent: #d08b6e;
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --paper: #121110;
+  --card: #1a1918;
+  --board: #201e1b;
+  --ink: #eeeae3;
+  --muted: #8f887e;
+  --line: #2f2c28;
+  --accent: #d08b6e;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }

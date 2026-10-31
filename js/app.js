@@ -94,14 +94,15 @@ $$('.nav button').forEach((b) => b.addEventListener('click', () => showView(b.da
 // ---------- Väder & plats ----------
 async function startWeather({ forceLocate = false } = {}) {
   const s = state.settings;
-  if (s.manual && !forceLocate) {
+  if (s.manual && !s.manual.auto && !forceLocate) {
     wx.cond = conditionsFrom({ temp: s.manual.temp, feelsLike: s.manual.temp, code: s.manual.rain ? 63 : s.manual.sunny ? 0 : 2 });
     wx.status = 'ok';
+    if (!s.manual.auto) wx.note = '';
     renderWeather();
     generate();
     return;
   }
-  if (forceLocate || !s.location || s.location.source === 'gps') return locate();
+  if (forceLocate || s.manual?.auto || !s.location || s.location.source === 'gps') return locate();
   return loadForecast(s.location);
 }
 
@@ -123,14 +124,22 @@ async function locate() {
       wx.note = e.message;
       await loadForecast(s.location);
     } else {
-      wx.status = 'error';
-      wx.error = e.message;
-      wx.panel = true;
-      wx.cond = null;
-      renderWeather();
-      generate();
+      fallbackToManual(e.message);
     }
   }
+}
+
+// Utan position och prognos (t.ex. nekad plats eller inget nät): visa förslag
+// för ett inställbart väder i stället för en tom sida. Nästa gång försöker
+// appen hämta riktig position igen.
+function fallbackToManual(message) {
+  state.settings.manual = { temp: 12, rain: false, sunny: false, auto: true };
+  wx.note = `${message} Ställ in vädret nedan så länge.`;
+  wx.panel = true;
+  wx.cond = conditionsFrom({ temp: 12, feelsLike: 12, code: 2 });
+  wx.status = 'ok';
+  renderWeather();
+  generate();
 }
 
 async function loadForecast(loc) {
@@ -140,9 +149,8 @@ async function loadForecast(loc) {
     wx.status = 'ok';
     wx.lastFetch = Date.now();
   } catch (e) {
-    wx.status = wx.cond ? 'ok' : 'error';
-    wx.error = e.message;
-    if (wx.cond) wx.note = e.message; else wx.panel = true;
+    if (!wx.cond) { fallbackToManual('Kunde inte hämta vädret.'); return; }
+    wx.note = e.message;
   }
   renderWeather();
   generate();
@@ -254,7 +262,13 @@ function bindWeather() {
   });
   const mt = $('#m-temp');
   if (mt) {
-    const upd = () => { persist(); startWeather(); };
+    const upd = () => {
+      persist();
+      const m = state.settings.manual;
+      wx.cond = conditionsFrom({ temp: m.temp, feelsLike: m.temp, code: m.rain ? 63 : m.sunny ? 0 : 2 });
+      renderWeather();
+      generate();
+    };
     mt.addEventListener('input', () => { $('#m-out').textContent = `${mt.value}°`; });
     mt.addEventListener('change', () => { state.settings.manual.temp = +mt.value; upd(); });
     $('#m-rain').addEventListener('change', (e) => { state.settings.manual.rain = e.target.checked; upd(); });
@@ -510,6 +524,8 @@ function newDraft(category) {
 }
 
 function openSheet(item = null) {
+  $('#delete-item').dataset.armed = '';
+  $('#delete-item').textContent = 'Ta bort';
   if (item) {
     draft = {
       ...newDraft(item.category), ...structuredClone(item), nameTouched: true, stylesTouched: true,
@@ -543,6 +559,7 @@ function renderSheet() {
   const total = queue.length;
   $('#sheet-title').textContent = d.id ? 'Redigera plagg' : total > 1 ? `Plagg ${queueIndex + 1} av ${total}` : 'Nytt plagg';
   $('#delete-item').hidden = !d.id;
+  if (!d.id) { $('#delete-item').dataset.armed = ''; $('#delete-item').textContent = 'Ta bort'; }
   $('#save-item').textContent = !d.id && queueIndex < total - 1 ? 'Spara · nästa' : 'Spara';
 
   // Foto
@@ -713,8 +730,18 @@ $('#item-form').addEventListener('submit', async (e) => {
   }
 });
 
-$('#delete-item').addEventListener('click', async () => {
-  if (!draft?.id || !confirm(`Ta bort ${draft.name}?`)) return;
+$('#delete-item').addEventListener('click', async (e) => {
+  if (!draft?.id) return;
+  const btn = e.currentTarget;
+  if (btn.dataset.armed !== '1') {
+    btn.dataset.armed = '1';
+    btn.textContent = 'Tryck igen för att ta bort';
+    clearTimeout(btn.timer);
+    btn.timer = setTimeout(() => { btn.dataset.armed = ''; btn.textContent = 'Ta bort'; }, 4000);
+    return;
+  }
+  btn.dataset.armed = '';
+  btn.textContent = 'Ta bort';
   const id = draft.id;
   state.wardrobe = state.wardrobe.filter((i) => i.id !== id);
   state.favorites = state.favorites.filter((f) => !f.itemIds.includes(id));
