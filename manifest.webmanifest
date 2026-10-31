@@ -1,0 +1,11 @@
+{
+  "name": "Robematcher",
+  "short_name": "Robematcher",
+  "description": "Din digitala garderob – outfits som matchar färg, stil och väder.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f6f2ec",
+  "theme_color": "#f6f2ec",
+  "lang": "sv",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
