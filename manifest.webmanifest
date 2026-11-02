@@ -1,0 +1,11 @@
+{
+  "name": "Robematcher",
+  "short_name": "Robematcher",
+  "description": "Din garderob, fotograferad. Outfits efter färg, stil och vädret där du är.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f3f0ea",
+  "theme_color": "#f3f0ea",
+  "lang": "sv",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
